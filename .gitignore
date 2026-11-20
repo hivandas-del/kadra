@@ -1,0 +1,12 @@
+node_modules/
+.env
+*.db
+*.db-*
+.kadra.key
+sauvegardes/
+*.log
+*.out
+# Notes internes des agents (e-mail, liens privés) : restent sur le PC
+CLAUDE.md
+AGENTS.md
+GEMINI.md
