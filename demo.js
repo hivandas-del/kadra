@@ -7,16 +7,16 @@ import nodemailer from 'nodemailer';
 import { PDFDocument, StandardFonts } from 'pdf-lib';
 import { totaux, lignesAcompte, lignesSolde, r2, eur } from './public/calc.js';
 
-process.env.DB_FILE = 'demo.db';
+const DB = (process.env.DB_FILE ||= 'demo.db'); // autre fichier = autre démo (ex. enregistrement de la vidéo), sans toucher demo.db
 process.env.PORT ||= '3001';
 process.env.KADRA_ADMIN ||= 'equipe@kadra.fr'; // compte « équipe Kadra » de la démo : page Modèles à reproduire
 // Boîte mail de test Ethereal (gratuite, fournie par nodemailer) : Kadra y envoie et y relève pour de vrai, rien n'arrive chez personne. Sans internet : envois simulés.
 const boite = await nodemailer.createTestAccount().catch(() => null);
 if (boite) Object.assign(process.env, { SMTP_HOST: boite.smtp.host, SMTP_PORT: String(boite.smtp.port), SMTP_USER: boite.user, SMTP_PASS: boite.pass });
-for (const f of ['demo.db', 'demo.db-wal', 'demo.db-shm']) fs.rmSync(f, { force: true });
+for (const f of [DB, DB + '-wal', DB + '-shm']) fs.rmSync(f, { force: true });
 await import('./server.js'); // crée les tables et lance le serveur ; on remplit la base avant la première requête
 
-const db = new DatabaseSync('demo.db');
+const db = new DatabaseSync(DB);
 const URL = `http://localhost:${process.env.PORT}`;
 const ins = (t, o) => { const k = Object.keys(o); return Number(db.prepare(`INSERT INTO ${t} (${k}) VALUES (${k.map(() => '?')})`).run(...k.map(x => (o[x] && typeof o[x] === 'object' ? JSON.stringify(o[x]) : o[x] ?? null))).lastInsertRowid); };
 const set = (t, id, o) => { const k = Object.keys(o); db.prepare(`UPDATE ${t} SET ${k.map(x => `${x}=?`)} WHERE id=?`).run(...k.map(x => o[x]), id); };

@@ -6,7 +6,8 @@
     "start": "node --disable-warning=ExperimentalWarning --env-file-if-exists=.env server.js",
     "demo": "node --disable-warning=ExperimentalWarning demo.js",
     "test": "node --disable-warning=ExperimentalWarning test.js",
-    "boite-test": "node --disable-warning=ExperimentalWarning boite-test.js"
+    "boite-test": "node --disable-warning=ExperimentalWarning boite-test.js",
+    "video": "node --disable-warning=ExperimentalWarning video.js"
   },
   "dependencies": {
     "@anthropic-ai/sdk": "^1.3.0",
