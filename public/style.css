@@ -740,7 +740,21 @@ ol.etapes{margin:4px 0 8px;padding-left:22px;display:grid;gap:10px;line-height:1
 .page:has(>.cockpit){flex:1;min-height:0;display:flex;flex-direction:column;padding-top:18px;padding-bottom:22px;max-width:1500px}
 /* ordre de lecture (Hivan, 2026-11-19) : chiffres (CA de l'année en premier, en grand), puis Aujourd'hui, À faire, chantiers */
 .cockpit{flex:1;min-height:0;display:grid;gap:16px;grid-template-columns:minmax(0,1fr) minmax(0,1.25fr) minmax(0,1fr);
-  grid-template-rows:auto minmax(0,1fr);grid-template-areas:"k k k" "rdv todo ch"}
+  grid-template-rows:auto minmax(0,1fr) minmax(0,1fr);grid-template-areas:"k k k" "rdv todo kfait" "ch todo kfait"}
+.cockpit>.kfait{grid-area:kfait;animation-delay:.36s}
+/* « Attend votre accord » : le choix en toutes lettres sous chaque ligne */
+.box.todo .lig li{flex-wrap:wrap;row-gap:6px}.box.todo .lig .t{flex:1 1 0}
+.box.todo .lig li::after{content:'';order:4;flex-basis:100%;height:0}
+.box.todo .lig li>.btn{order:5;min-height:32px;padding:5px 13px}.box.todo .lig li>.btn:first-of-type{margin-left:42px}
+/* « Kadra a fait pour vous » : la journée heure par heure, un point par action (vert = argent, signature) */
+.box .fsous{margin:-4px 0 8px;color:var(--ink2);font-size:14px}
+.tl li{display:flex;gap:10px;align-items:flex-start;padding:5px 4px;border-radius:12px;cursor:pointer;position:relative}
+.tl li:hover{background:#f6f8fc}
+.tl .hr{flex:0 0 42px;font-size:12.5px;font-weight:700;color:var(--muted);padding-top:2px;text-align:right}
+.tl i{flex:none;width:10px;height:10px;border-radius:50%;margin-top:6px;background:var(--plan);box-shadow:0 0 0 3px var(--surface)}
+.tl li.ok i{background:var(--good)}.tl li.info i{background:#9aa4b8}
+.tl li:not(:last-child)::before{content:'';position:absolute;left:60px;top:20px;bottom:-6px;width:2px;background:var(--line2)}
+.tl .t{flex:1;min-width:0}.tl .t b{display:block;font-weight:700;font-size:14.5px;line-height:1.35}.tl .t small{display:block;color:var(--muted);font-size:13px;line-height:1.4}
 .cockpit>.kpis{grid-template-columns:minmax(0,1.5fr) repeat(3,minmax(0,1fr))}
 .kpi.ca-an{background:radial-gradient(260px 180px at 100% 0,rgba(91,140,255,.35),transparent 75%),var(--graphite);color:#fff}
 .kpi.ca-an .l,.kpi.ca-an small{color:#c9d3ea}.kpi.ca-an .ki{background:rgba(255,255,255,.12);color:#fff;box-shadow:none}
@@ -771,12 +785,12 @@ body.intro .cockpit>.box{animation-play-state:paused}
 .box>.empty.fait{flex:1;align-content:center;padding:10px}
 /* ordinateur étroit : deux colonnes ; le CA sur toute la largeur au-dessus des 3 autres chiffres */
 @media (min-width:901px) and (max-width:1180px){
-  .cockpit{grid-template-columns:minmax(0,1fr) minmax(0,1fr);grid-template-rows:auto minmax(0,1fr) minmax(0,1fr);grid-template-areas:"k k" "rdv todo" "ch todo"}
+  .cockpit{grid-template-columns:minmax(0,1fr) minmax(0,1fr);grid-template-rows:auto minmax(0,1fr) minmax(0,1fr);grid-template-areas:"k k" "rdv todo" "ch kfait"}
   .cockpit>.kpis{grid-template-columns:repeat(3,minmax(0,1fr))}.cockpit .kpi.ca-an{grid-column:1/-1}
 }
 /* écran très bas : on garde des cases lisibles, quitte à défiler */
 @media (min-width:901px) and (max-height:620px){
-  .main:has(.cockpit){height:auto}.cockpit{grid-template-rows:auto 300px}
+  .main:has(.cockpit){height:auto}.cockpit{grid-template-rows:auto 260px 260px}
 }
 @media (min-width:901px) and (max-width:1180px) and (max-height:620px){.cockpit{grid-template-rows:auto 230px 230px}}
 /* téléphone : les 3 chiffres sur une ligne, puis une seule case à la fois (onglets) qui remplit l'écran jusqu'à la barre du bas */
@@ -790,7 +804,7 @@ body.intro .cockpit>.box{animation-play-state:paused}
   .cockpit>.ctabs{display:flex;flex:none;max-width:none}.cockpit>.ctabs button{flex:1 1 auto;justify-content:center;padding:7px 6px}
   .cockpit>.box{display:none;flex:1 1 0;padding:12px 12px 10px;border-radius:20px}.cockpit>.box.on{display:flex}
   .cockpit .box>.bh h2{display:none}.cockpit .box>.bh{justify-content:flex-end;min-height:0}.cockpit .box>.bh:not(:has(>:not(h2):not([hidden]))){display:none}
-  .lig li>.btn{display:none}
+  .lig li>.btn{display:none}.box.todo .lig li>.btn{display:inline-flex}
 }
 .lig .r b.crit{color:var(--crit)}
 .box .evs .t b,.box .evs .t small{overflow:hidden;text-overflow:ellipsis;white-space:nowrap}

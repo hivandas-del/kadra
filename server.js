@@ -1029,8 +1029,37 @@ function dashboard(cid) {
     chantiers: ouverts,
     rdv: all(`SELECT * FROM (${scoped('rdv', cid)}) WHERE statut='confirme' AND debut >= ? AND debut < ? ORDER BY debut LIMIT 6`, t, addDays(t, 8)),
     mails: all(`SELECT x.id, x.de, x.sujet, substr(x.corps, 1, 140) apercu, x.created_at, x.client_nom FROM (${MAILS}) x WHERE x.sens='recu' AND x.lu=0 ORDER BY x.created_at DESC LIMIT 4`, cid),
+    rdv_prop: all(`SELECT r.id, r.titre, r.debut, r.lieu, c.nom client_nom FROM (${scoped('rdv', cid)}) r LEFT JOIN clients c ON c.id=r.client_id WHERE r.statut='propose' AND r.debut >= ? ORDER BY r.debut LIMIT 10`, t),
+    fait: faitAujourdhui(cid),
     ...compteurs(cid),
   };
+}
+// « Kadra a fait pour vous » : ce qui s'est fait sans l'artisan aujourd'hui, tiré des traces existantes (pas de journal à part).
+// ponytail: journée en UTC comme today() ; une relance manuelle compte aussi (derniere_relance ne dit pas qui l'a faite).
+function faitAujourdhui(cid) {
+  const t = today(), iso = s => (s.includes('T') ? s : s.replace(' ', 'T') + 'Z'), out = [];
+  for (const d of all(`SELECT * FROM (${scoped('documents', cid)}) WHERE derniere_relance >= ? OR signe_le >= ?`, t, t)) {
+    const qui = d.data.client?.nom || d.client_nom || 'le client';
+    if (d.derniere_relance >= t) out.push({ at: iso(d.derniere_relance), k: 'relance', href: '#/doc/' + d.id, t: `Relance envoyée à ${qui}`,
+      s: d.type === 'facture' ? `Facture ${d.numero}, ${eur(d.total_ttc - d.regle)} à payer (${d.relances === 1 ? '1re' : d.relances + 'e'} relance)` : `Devis ${d.numero} sans réponse` });
+    if (d.signe_le >= t) out.push({ at: iso(d.signe_le), k: 'ok', href: '#/doc/' + d.id, t: `Devis signé par ${d.signe_par || qui}`, s: `${d.numero}, ${eur(d.total_ttc)} TTC · chantier créé` });
+  }
+  const motifs = [
+    [/^Paiement reçu : (.+) sur (.+)$/, m => ({ k: 'ok', t: `Paiement en ligne reçu : ${m[1]}`, s: `Facture ${m[2]}` })],
+    [/^Facture d’acompte (\S+)/, m => ({ k: 'relance', t: 'Facture d’acompte envoyée au client', s: m[1] })],
+    [/^Rappel : rendez-vous/, (m, e) => ({ k: 'rdv', t: 'Rappel du rendez-vous envoyé', s: e.a })],
+    [/^Chantier « (.+) » : information sur le planning$/, m => ({ k: 'relance', t: 'Client prévenu du retard', s: `Chantier ${m[1]}` })],
+    [/^Votre journée/, () => ({ k: 'info', t: 'Résumé du matin envoyé', s: 'Dans votre boîte mail' })],
+  ];
+  for (const e of all("SELECT id, a, sujet, created_at, document_id FROM emails WHERE compte_id=? AND sens='envoye' AND created_at >= ? AND statut NOT LIKE 'échec%'", cid, t)) {
+    const [re, f] = motifs.find(([re]) => re.test(e.sujet)) || [];
+    if (re) out.push({ at: iso(e.created_at), href: e.document_id ? '#/doc/' + e.document_id : '#/mails', ...f(e.sujet.match(re), e) });
+  }
+  for (const r of all(`SELECT id, titre, statut, created_at FROM (${scoped('rdv', cid)}) WHERE (statut='propose' OR email_id IS NOT NULL) AND created_at >= ?`, t))
+    out.push({ at: iso(r.created_at), k: 'rdv', href: '#/agenda', t: 'Rendez-vous repéré dans un e-mail', s: `${r.titre} : ${r.statut === 'propose' ? 'à confirmer' : 'mis à l’agenda'}` });
+  const recus = all("SELECT created_at FROM emails WHERE compte_id=? AND sens='recu' AND created_at >= ? ORDER BY created_at DESC", cid, t);
+  if (recus.length) out.push({ at: iso(recus[0].created_at), k: 'info', href: '#/mails', t: `${plural(recus.length, 'e-mail')} de clients relevé${recus.length > 1 ? 's' : ''}`, s: 'Rangés par client dans E-mails' });
+  return out.sort((a, b) => b.at.localeCompare(a.at)).slice(0, 30);
 }
 // ---------- Analyse : qui paie bien, quels chantiers rapportent, quels devis se signent ----------
 // Un chantier « rapporte » = (prix HT − dépenses HT saisies) par jour de chantier. ponytail: les heures de travail ne sont pas comptées.

@@ -1060,7 +1060,7 @@ function ajuster() {
 }
 let ajusteT;
 addEventListener('resize', () => { clearTimeout(ajusteT); ajusteT = setTimeout(() => { if ($('.cockpit')) ajuster(); }, 120); });
-let caseVue = 'rdv'; // téléphone : la case affichée sous les chiffres (« Aujourd'hui » d'abord)
+let caseVue = 'todo'; // téléphone : la case affichée sous les chiffres (« Attend votre accord » d'abord)
 const encoreDu = k => k.a_encaisser - k.en_retard > 0.005 ? `${k.en_retard ? 'et' : 'rien en retard,'} ${eur(k.a_encaisser - k.en_retard)} à venir` : k.en_retard ? 'C’est tout ce qu’on vous doit' : 'Personne ne vous doit rien';
 
 // Accueil « cockpit » : tout tient dans l'écran, sur ordinateur comme sur téléphone (Hivan ne veut pas descendre)
@@ -1068,30 +1068,36 @@ async function dashboard() {
   const k = await api('dashboard');
   const enRetard = k.chantiers.filter(c => chantierInfo(c).late);
   const depuis = d => { const n = -joursJusqua(d.slice(0, 10)); return n <= 0 ? 'aujourd’hui' : n === 1 ? 'hier' : `il y a ${n} jours`; };
-  const bt = (attr, ic, t) => `<button class="btn sm icon" ${attr} title="${t}" aria-label="${t}">${icon(ic, 15)}</button>`;
-  // « À faire » : une seule liste, les sujets en filtres au-dessus
+  // Boutons en toutes lettres sous chaque ligne : le 1er = ce que Kadra propose, le 2e = l'autre choix
+  const bt = (attr, t, autre) => `<button class="btn sm ${autre ? 'ghost' : 'primary'}" ${attr}>${t}</button>`, va = href => `data-go="${href}"`;
+  const quandRdv = r => new Date(r.debut.length > 10 ? r.debut : r.debut + 'T12:00').toLocaleDateString(LOC, { weekday: 'long', day: 'numeric', month: 'long' }) + (r.debut.length > 10 ? ' à ' + r.debut.slice(11, 16) : '');
+  // « Attend votre accord » : une seule liste, les sujets en filtres au-dessus
   const groupes = [
+    k.rdv_prop.length && { g: 'rdv', l: 'Rendez-vous', href: '#/agenda',
+      items: k.rdv_prop.map(r => ({ href: '#/agenda/' + r.debut.slice(0, 10), av: r.client_nom ? avatar(r.client_nom) : `<span class="av">${icon('calendar', 16)}</span>`, t: r.client_nom || r.titre, s: `Rendez-vous trouvé dans un e-mail : ${quandRdv(r)}`,
+        a: bt(`data-okp="${r.id}"`, 'Mettre à l’agenda') + bt(`data-nop="${r.id}"`, 'Ignorer', 1) })) },
     k.non_lus && { g: 'mails', l: 'E-mails', n: k.non_lus, href: '#/mails',
-      items: k.mails.map(m => ({ href: '#/mails/' + m.id, av: avatar(m.client_nom || m.de), t: m.client_nom || m.de || 'Inconnu', s: `E-mail : ${m.sujet || '(sans objet)'}`, r: `<small>${quandCourt(m)}</small>` })) },
+      items: k.mails.map(m => ({ href: '#/mails/' + m.id, av: avatar(m.client_nom || m.de), t: m.client_nom || m.de || 'Inconnu', s: `E-mail : ${m.sujet || '(sans objet)'}`, r: `<small>${quandCourt(m)}</small>`, a: bt(va('#/mails/' + m.id), 'Lire et répondre') })) },
     k.factures_retard.length && { g: 'argent', l: 'Impayés', href: '#/factures?retard',
       items: [...k.factures_retard].sort((a, b) => a.echeance.localeCompare(b.echeance)).map(f => ({ href: '#/doc/' + f.id, av: avatar(f.client_nom), t: f.client_nom || 'Un client', s: `Impayé, ${plural(-joursJusqua(f.echeance), 'jour')} de retard${f.relances ? `, ${plural(f.relances, 'relance')}` : ''}`,
-        r: `<b class="crit">${eur(f.total_ttc - f.regle)}</b><small>${f.numero}</small>`, a: bt(`data-relance="${f.id}"`, 'send', 'Relancer') + bt(`data-encaisser="${f.id}"`, 'check', 'Encaisser') })) },
-    k.devis_a_relancer.length && { g: 'devis', l: 'Devis', href: '#/devis',
-      items: [...k.devis_a_relancer].sort((a, b) => String(a.envoye_le).localeCompare(String(b.envoye_le))).map(d => ({ href: '#/doc/' + d.id, av: avatar(d.client_nom), t: d.client_nom || 'Un client', s: `Devis sans réponse${d.envoye_le ? `, envoyé ${depuis(d.envoye_le)}` : ''}`, r: `<b>${eur(d.total_ttc)}</b>`, a: bt(`data-relance="${d.id}"`, 'send', 'Relancer') })) },
-    k.rdv_proposes && { g: 'rdv', l: 'Rendez-vous', n: k.rdv_proposes, href: '#/agenda',
-      items: [{ href: '#/agenda', av: `<span class="av">${icon('calendar', 16)}</span>`, t: plural(k.rdv_proposes, 'rendez-vous à confirmer', 'rendez-vous à confirmer'), s: 'Kadra les a trouvés dans vos e-mails' }] },
+        r: `<b class="crit">${eur(f.total_ttc - f.regle)}</b><small>${f.numero}</small>`, a: bt(`data-relance="${f.id}"`, 'Relancer') + bt(`data-encaisser="${f.id}"`, 'Il a payé', 1) })) },
     k.a_facturer.length && { g: 'facturer', l: 'À facturer', href: k.a_facturer.length === 1 ? k.a_facturer[0].href : '#/chantiers',
-      items: k.a_facturer.map(x => ({ href: x.href, av: avatar(x.nom), t: x.nom || 'Un client', s: x.quoi, r: `<b>${eur(x.montant)}</b>` })) },
+      items: k.a_facturer.map(x => ({ href: x.href, av: avatar(x.nom), t: x.nom || 'Un client', s: x.quoi, r: `<b>${eur(x.montant)}</b>`, a: bt(va(x.href), 'Faire la facture') })) },
+    k.devis_a_relancer.length && { g: 'devis', l: 'Devis', href: '#/devis',
+      items: [...k.devis_a_relancer].sort((a, b) => String(a.envoye_le).localeCompare(String(b.envoye_le))).map(d => ({ href: '#/doc/' + d.id, av: avatar(d.client_nom), t: d.client_nom || 'Un client', s: `Devis sans réponse${d.envoye_le ? `, envoyé ${depuis(d.envoye_le)}` : ''}`, r: `<b>${eur(d.total_ttc)}</b>`, a: bt(`data-relance="${d.id}"`, 'Relancer') })) },
     enRetard.length && { g: 'chantiers', l: 'Chantiers', href: '#/chantiers',
-      items: enRetard.map(c => ({ href: '#/chantier/' + c.id, av: avatar(c.client_nom || c.nom), t: c.nom, s: `En retard : ${finTexte(c).toLowerCase()}` })) },
+      items: enRetard.map(c => ({ href: '#/chantier/' + c.id, av: avatar(c.client_nom || c.nom), t: c.nom, s: `En retard : ${finTexte(c).toLowerCase()}`, a: bt(va('#/chantier/' + c.id), 'Voir le chantier', 1) })) },
   ].filter(Boolean);
+  // « Kadra a fait pour vous » : ce qui s'est fait tout seul aujourd'hui, le plus récent en haut
+  const heureDe = at => new Date(at).toLocaleTimeString(LOC, { hour: '2-digit', minute: '2-digit' });
+  const fait = k.fait.map(f => `<li data-href="${f.href}" class="${f.k}"><span class="hr">${heureDe(f.at)}</span><i aria-hidden="true"></i><div class="t"><b>${h(f.t)}</b><small>${h(f.s)}</small></div></li>`).join('');
   const nbTodo = groupes.reduce((s, g) => s + (g.n || g.items.length), 0);
   const ligne = (i, g) => `<li data-g="${g.g}" data-lien="${g.href}" data-href="${i.href}">${i.av}<div class="t"><b>${h(i.t)}</b><small>${h(i.s)}</small></div>${i.r ? `<div class="r">${i.r}</div>` : ''}${i.a || ''}</li>`;
   const plus = '<a class="plus" data-plus hidden></a>';
   const chLigne = c => { const late = chantierInfo(c).late;
     return `<li data-href="#/chantier/${c.id}"><div class="t"><b>${h(c.nom)}</b><small${late ? ' class="crit"' : ''}>${h([c.client_nom, finTexte(c)].filter(Boolean).join(' · '))}</small>${c.statut === 'a_venir' ? '' : avance(c)}</div>
 <div class="r">${late || c.statut === 'a_venir' ? chantierPill(c) : `<b>${c.avancement || 0} %</b>`}</div></li>`; };
-  const cases = [['rdv', 'Aujourd’hui'], ['todo', 'À faire', nbTodo], ['ch', 'Chantiers', k.chantiers.length]];
+  const cases = [['todo', 'À valider', nbTodo], ['kfait', 'Kadra', k.fait.length], ['rdv', 'Aujourd’hui'], ['ch', 'Chantiers', k.chantiers.length]];
   // « Aujourd'hui » : les rendez-vous du jour d'abord, puis ceux des jours suivants
   const auj = k.rdv.filter(r => r.debut.slice(0, 10) === today()), ensuite = k.rdv.filter(r => !auj.includes(r));
   const evs = (a, jour) => evList(a, '', jour).replace(/^<ul class="evs">|<\/ul>$/g, '');
@@ -1102,7 +1108,7 @@ async function dashboard() {
   const on = b => (b === caseVue ? ' on' : '');
   badges(k);
   const prenom = (ME.user.nom || '').split(' ')[0], late = enRetard.length, heure = new Date().getHours();
-  head(prenom ? (heure >= 18 ? `Bonsoir ${prenom}` : `Bonjour ${prenom}`) : heure >= 18 ? 'Bonsoir' : 'Bonjour', `${new Date().toLocaleDateString(LOC, { weekday: 'long', day: 'numeric', month: 'long' })}. ${nbTodo ? `${plural(nbTodo, 'chose')} à faire aujourd’hui.` : 'Rien d’urgent aujourd’hui.'}`);
+  head(prenom ? (heure >= 18 ? `Bonsoir ${prenom}` : `Bonjour ${prenom}`) : heure >= 18 ? 'Bonsoir' : 'Bonjour', `${new Date().toLocaleDateString(LOC, { weekday: 'long', day: 'numeric', month: 'long' })}. ${nbTodo ? `${plural(nbTodo, 'chose')} ${nbTodo > 1 ? 'attendent' : 'attend'} votre accord.` : 'Rien n’attend votre accord.'}`);
   view.innerHTML = `<div class="cockpit">
 <div class="installer" data-install hidden>${LOGO}<div><b>Installez Kadra sur votre téléphone</b><small>Il s’ouvrira comme une appli, en plein écran.</small></div>
 <button class="btn primary sm" data-installer>Installer</button><button class="btn ghost icon" data-install-non aria-label="Plus tard" title="Plus tard">${icon('x', 16)}</button></div>
@@ -1113,7 +1119,7 @@ async function dashboard() {
   <a class="kpi" href="#/chantiers"><span class="ki">${icon('helmet', 20)}</span><span class="l" data-c="Signé à venir">Travail signé à venir</span><span class="v">${eur(av.ht)} <small>HT</small></span><small>${av.nb ? `${plural(av.nb, 'chantier')}${av.jusqua ? `, jusqu’au ${new Date(av.jusqua).toLocaleDateString(LOC, { day: 'numeric', month: 'long' })}` : ''}` : 'Aucun chantier signé'}${late ? ` · ${late} en retard` : ''}</small></a>
 </section>
 <div class="seg ctabs" role="group" aria-label="Afficher">${cases.map(([b, l, n]) => `<button data-case="${b}" class="${on(b)}">${l}${n ? ` <em>${n}</em>` : ''}</button>`).join('')}</div>
-<section class="box todo${on('todo')}" data-lien="${groupes.length === 1 ? groupes[0].href : ''}"><div class="bh"><h2>À faire</h2>${plus}</div>
+<section class="box todo${on('todo')}" data-lien="${groupes.length === 1 ? groupes[0].href : ''}"><div class="bh"><h2>Attend votre accord</h2>${plus}</div>
 ${groupes.length > 1 ? `<div class="seg filtres" role="group" aria-label="Sujet"><button data-g="" class="on">Tout <em>${nbTodo}</em></button>${groupes.map(g => `<button data-g="${g.g}">${g.l} <em>${g.n || g.items.length}</em></button>`).join('')}</div>` : ''}
 ${groupes.length ? `<ul class="lig fit">${groupes.flatMap(g => g.items.map(i => ligne(i, g))).join('')}</ul>`
     : `<div class="empty fait"><span class="ok">${icon('check', 30)}</span><p><b>Tout est à jour.</b><br>Rien en retard, aucun message à lire.</p></div>`}</section>
@@ -1121,6 +1127,9 @@ ${groupes.length ? `<ul class="lig fit">${groupes.flatMap(g => g.items.map(i => 
 <ul class="evs fit">${auj.length ? evs(auj) : '<li class="rien">Aucun rendez-vous aujourd’hui.</li>'}${ensuite.length ? `<li class="sep">Ensuite</li>${evs(ensuite, true)}` : ''}</ul></section>
 <section class="box ch${on('ch')}" data-lien="#/chantiers"><div class="bh"><h2>Vos chantiers</h2>${plus}</div>
 ${k.chantiers.length ? `<ul class="lig fit">${k.chantiers.map(chLigne).join('')}</ul>` : `<p class="muted">Aucun chantier en cours. Un devis signé crée son chantier automatiquement.</p>`}</section>
+<section class="box kfait${on('kfait')}" data-lien="#/mails"><div class="bh"><h2>Kadra a fait pour vous</h2>${plus}</div>
+${fait ? `<p class="fsous">Aujourd’hui, sans vous déranger : <b>${plural(k.fait.length, 'chose')}</b>.</p><ul class="tl fit">${fait}</ul>`
+    : `<p class="muted">Rien encore aujourd’hui. Kadra relance vos clients, relève vos e-mails et note ici chaque signature et chaque paiement en ligne.</p>`}</section>
 </div>`;
   montrerInstall();
   ajuster(); document.fonts?.ready.then(() => $('.cockpit') && ajuster());
@@ -1153,6 +1162,14 @@ ${k.chantiers.length ? `<ul class="lig fit">${k.chantiers.map(chLigne).join('')}
     if (b) busy(b, async () => { const r = await api(`documents/${b.dataset.relance}/relancer`, 'POST'); toast('Relance : ' + r.statut); b.outerHTML = P('Relancé', 'good', 'check'); });
     const en = e.target.closest('[data-encaisser]');
     if (en) encaisser(k, k.factures_retard.find(f => f.id === +en.dataset.encaisser), en.closest('li'));
+    const go = e.target.closest('[data-go]');
+    if (go) location.hash = go.dataset.go;
+    const ok = e.target.closest('[data-okp],[data-nop]');
+    if (ok) busy(ok, async () => {
+      if (ok.dataset.okp) { await api('rdv/' + ok.dataset.okp, 'PUT', { statut: 'confirme' }); toast('Ajouté à l’agenda'); }
+      else { await api('rdv/' + ok.dataset.nop, 'DELETE'); toast('Proposition ignorée'); }
+      route();
+    });
   });
 }
 
