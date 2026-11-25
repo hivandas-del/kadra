@@ -20,7 +20,7 @@ export const PLACEHOLDERS = {
   'entreprise.email': 'E-mail', 'entreprise.site': 'Site web', 'entreprise.siret': 'SIRET', 'entreprise.rcs': 'RCS', 'entreprise.tva_intra': 'N° TVA',
   'entreprise.iban': 'IBAN', 'entreprise.bic': 'BIC', 'entreprise.assurance': 'Assurance décennale',
   'client.nom': 'Nom du client', 'client.adresse': 'Adresse du client', 'client.tel': 'Téléphone du client', 'client.email': 'E-mail du client',
-  '{bloc_entreprise}': 'Coordonnées entreprise (HTML)', '{bloc_client}': 'Coordonnées client (HTML)', '{logo}': 'Logo (HTML)',
+  '{bloc_entreprise}': 'Coordonnées entreprise (HTML)', '{bloc_client}': 'Coordonnées client (HTML)', '{logo}': 'Logo (HTML)', '{cachet}': 'Cachet et signature de l’entreprise (HTML)',
   '{lignes}': 'Tableau des lignes (HTML)', '{totaux}': 'Tableau des totaux (HTML)', '{mentions}': 'Mentions légales (HTML)',
   '{signature}': 'Bloc signature / paiement (HTML)', '{css_base}': 'CSS de base des tableaux',
 };
@@ -255,6 +255,7 @@ export function docContext(doc, s, { paye = 0, avoirs = 0, edit = false, tpl = '
     entreprise: { ...s, stripe_secret: '', stripe_webhook_secret: '', imap_pass: '' }, // un modèle ne peut jamais afficher un secret
     client: c,
     logo: s.logo ? `<img class="logo" src="${esc(s.logo)}" alt="">` : '',
+    cachet: s.cachet ? `<img class="cachet" src="${esc(s.cachet)}" alt="Cachet et signature de l’entreprise">` : '',
     bloc_entreprise: `<b>${esc(s.nom)}</b><br>${nl2br(s.adresse)}${s.tel ? `<br>Tél. ${esc(s.tel)}` : ''}${s.email ? `<br>${esc(s.email)}` : ''}${s.site ? `<br>${esc(s.site)}` : ''}
 ${s.siret ? `<br>SIRET ${esc(s.siret)}` : ''}${s.rcs ? `<br>${esc(s.rcs)}` : ''}${s.tva_intra && !franchise ? `<br>TVA ${esc(s.tva_intra)}` : ''}`,
     bloc_client: edit

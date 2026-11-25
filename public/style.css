@@ -725,6 +725,10 @@ ol.etapes{margin:4px 0 8px;padding-left:22px;display:grid;gap:10px;line-height:1
   background:var(--graphite);color:#fff;border-radius:999px;padding:7px 14px;font-size:13px;font-weight:600;display:flex;gap:8px;align-items:center;box-shadow:var(--pop);white-space:nowrap}
 #traduit{position:fixed;bottom:calc(16px + env(safe-area-inset-bottom));left:16px;z-index:60;max-width:calc(100% - 32px);background:var(--graphite);color:#fff;border-radius:999px;padding:7px 14px;font-size:13px;font-weight:600;box-shadow:var(--pop)}
 @media(max-width:900px){#traduit{bottom:calc(84px + env(safe-area-inset-bottom))}}
+/* Compte d'exemple de la visite, ouvert hors de la visite : toujours un moyen de revenir à son compte */
+#bac{position:fixed;bottom:calc(16px + env(safe-area-inset-bottom));left:50%;transform:translateX(-50%);z-index:60;max-width:calc(100% - 32px);
+  background:var(--graphite);color:#fff;border-radius:999px;padding:6px 6px 6px 16px;font-size:13px;font-weight:600;display:flex;gap:12px;align-items:center;box-shadow:var(--pop)}
+@media(max-width:900px){#bac{bottom:calc(84px + env(safe-area-inset-bottom))}}
 .au-lg{display:inline-flex;align-items:center;gap:4px;white-space:nowrap}.au-lg select{border:0;background:none;color:inherit;font:inherit;cursor:pointer;padding:0}
 /* Paramètres > Kadra vous connaît */
 .habitudes{list-style:none;margin:0;padding:0;display:grid;gap:8px}
@@ -904,3 +908,19 @@ table.imp tr.off td{opacity:.45}table.imp select{max-width:190px}
   table.imp td{padding:0;border:0}table.imp td:nth-child(1){grid-area:doc}table.imp td:nth-child(2){grid-area:who}table.imp td:nth-child(3){grid-area:amt}
   table.imp td:nth-child(4){grid-area:st}table.imp td:nth-child(5){grid-area:act}table.imp select{max-width:100%}}
 .wbar input[type=number]{width:62px;padding:5px 6px;font-size:13.5px}
+
+/* Abonnement : 3 formules */
+.offres{display:grid;grid-template-columns:repeat(3,minmax(0,1fr));gap:18px;align-items:start}
+.offre{padding:24px;display:flex;flex-direction:column;gap:12px;position:relative}
+.offre h2{margin:0;font-size:22px}.offre>p{margin:0;min-height:40px}
+.offre.conseil{outline:2px solid var(--plan)}.offre>.pill{align-self:flex-start}
+.offre .prix b{font-size:34px;font-weight:800;letter-spacing:-.02em}.offre .prix span{color:var(--ink2);margin-left:6px}
+.offre ul{list-style:none;margin:0;padding:0;display:grid;gap:8px;flex:1}.offre li{display:flex;gap:8px;align-items:flex-start;line-height:1.35}.offre li svg{color:var(--plan);flex:none;margin-top:2px}
+.offre .btn{justify-content:center}.offre-pied{margin-top:16px}
+@media (max-width:900px){.offres{grid-template-columns:minmax(0,1fr)}.offre>p{min-height:0}}
+.au-pied a{color:inherit;text-decoration:underline;text-underline-offset:2px}
+.seg.periode{margin-bottom:16px}.offre .prix small{display:block;color:var(--ink2);font-size:13.5px}.offre .base{margin:0;font-weight:700;font-size:14.5px;min-height:0}
+.panel.cmp{margin-top:18px}.cmp .tw{overflow-x:auto;padding:0 18px 12px}.cmp table{min-width:520px}.cmp td:not(:first-child),.cmp th:not(:first-child){text-align:center}.cmp .oui{color:var(--plan)}
+.mform ol.etapes{counter-reset:et;list-style:none;margin:0;padding:12px 14px;display:grid;gap:10px;background:var(--beton);border-radius:14px;font-size:14px;line-height:1.45}
+.mform ol.etapes li{counter-increment:et;display:grid;grid-template-columns:24px 1fr;gap:10px}
+.mform ol.etapes li::before{content:counter(et);width:24px;height:24px;border-radius:50%;background:var(--plan);color:#fff;font-weight:700;font-size:13px;display:grid;place-items:center}

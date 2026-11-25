@@ -10,9 +10,10 @@ import nodemailer from 'nodemailer';
 import { ImapFlow } from 'imapflow';
 import { totaux, lignesAcompte, lignesSolde, lignesSituation, r2, eur, CATEGORIES, ecritures } from './public/calc.js';
 import { renderDoc, docContext, partialJSON, BUILTINS, SAMPLE, PLACEHOLDERS } from './templates.js';
-import { htmlToPdf, htmlToPng, ciiXml, facturx } from './pdf.js';
-import { xlsxToHtml, docxTexte } from './xlsx.js';
+import { htmlToPdf, htmlToPng, ciiXml, facturx, pdfImages } from './pdf.js';
+import { xlsxToHtml, docxTexte, zipImages } from './xlsx.js';
 import { extraire } from './public/i18n.js';
+import { remplirDemo } from './demo-donnees.js';
 
 const PORT = +process.env.PORT || 3000;
 const PUBLIC_URL = (process.env.PUBLIC_URL || `http://localhost:${PORT}`).replace(/\/$/, '');
@@ -73,6 +74,9 @@ if (!cols('documents').includes('compte_id')) {
 }
 if (!cols('clients').includes('siret')) db.exec('ALTER TABLE clients ADD COLUMN siret TEXT');
 if (!cols('users').includes('langue')) db.exec('ALTER TABLE users ADD COLUMN langue TEXT');
+// Présentation de la 1re connexion : users.bac = compte d'exemple (comptes.bac = 1) qu'il regarde à la place du sien, effacé à la fin
+if (!cols('users').includes('bac')) db.exec('ALTER TABLE users ADD COLUMN bac INTEGER');
+if (!cols('comptes').includes('bac')) db.exec('ALTER TABLE comptes ADD COLUMN bac INTEGER');
 if (!cols('users').includes('langue2')) db.exec('ALTER TABLE users ADD COLUMN langue2 TEXT'); // 2e langue du micro (pastille), NULL = une seule langue
 if (!cols('payments').includes('ref')) db.exec('ALTER TABLE payments ADD COLUMN ref TEXT');
 if (!cols('rdv').includes('rappel_le')) db.exec('ALTER TABLE rdv ADD COLUMN rappel_le TEXT');
@@ -121,10 +125,15 @@ const DEFAULT_SETTINGS = {
 };
 for (const t of BUILTINS) { const b = get('SELECT id FROM templates WHERE builtin=1 AND nom=?', t.nom); if (b) run('UPDATE templates SET html=? WHERE id=?', t.html, b.id); else run('INSERT INTO templates (nom, html, builtin) VALUES (?,?,1)', t.nom, t.html); } // mises en page intégrées : toujours la dernière version, les nouvelles arrivent aussi dans les bases existantes
 // Secrets (clé Stripe, mot de passe de la boîte mail) chiffrés en base (AES-256-GCM). La clé vient de KADRA_KEY,
-// sinon du fichier .kadra.key créé au premier lancement : à sauvegarder À PART de la base (sans elle, les secrets sont à ressaisir).
+// sinon du fichier ~/.kadra/kadra.key (ou KADRA_KEY_FILE), hors du dossier du projet et de ses sauvegardes, créé au premier lancement :
+// à sauvegarder À PART de la base (sans elle, les secrets sont à ressaisir). Un ancien .kadra.key dans le projet y est déplacé.
 const SECRETS = ['stripe_secret', 'stripe_webhook_secret', 'imap_pass'];
-const KEYFILE = path.resolve('.kadra.key');
-if (!process.env.KADRA_KEY && !fs.existsSync(KEYFILE)) fs.writeFileSync(KEYFILE, crypto.randomBytes(32).toString('hex'), { mode: 0o600 });
+const KEYFILE = process.env.KADRA_KEY_FILE || path.join(os.homedir(), '.kadra', 'kadra.key');
+if (!process.env.KADRA_KEY && !fs.existsSync(KEYFILE)) {
+  fs.mkdirSync(path.dirname(KEYFILE), { recursive: true });
+  if (fs.existsSync('.kadra.key')) { fs.copyFileSync('.kadra.key', KEYFILE); fs.unlinkSync('.kadra.key'); }
+  else fs.writeFileSync(KEYFILE, crypto.randomBytes(32).toString('hex'), { mode: 0o600 });
+}
 const CLE = Buffer.from((process.env.KADRA_KEY || fs.readFileSync(KEYFILE, 'utf8')).trim(), 'hex');
 const chiffre = v => {
   if (!v || String(v).startsWith('enc:')) return v;
@@ -320,12 +329,18 @@ async function sendMail(cid, { to, sujet, corps, document_id = null, chantier_id
     try { attachments = [{ filename: pdfName(joindre), content: await docPdf(joindre) }]; }
     catch (e) { statut += ', PDF non joint : ' + e.message; }
   }
+  // Boîte de l'artisan branchée : envoyé depuis son adresse (même mot de passe que pour lire) ; sinon, ou si elle refuse, par celle de Kadra
+  const smtp = s.imap_host && s.imap_user && s.imap_pass && smtpDe(s.imap_host);
+  const envois = [smtp && [nodemailer.createTransport({ host: smtp[0], port: smtp[1], secure: smtp[1] === 465, auth: { user: s.imap_user, pass: s.imap_pass } }), s.imap_user],
+    mailer && [mailer, process.env.SMTP_FROM || process.env.SMTP_USER]].filter(Boolean);
   if (!to) statut = 'échec : aucune adresse e-mail';
-  else if (mailer) {
+  else if (/@example\.com$/i.test(to) && get('SELECT bac FROM comptes WHERE id=?', cid)?.bac) statut = 'simulé (client d’exemple)';
+  else for (const [t, de] of envois) {
     try {
-      mid = (await mailer.sendMail({ from: { name: s.nom, address: process.env.SMTP_FROM || process.env.SMTP_USER }, replyTo: s.email || undefined, to, subject: sujet, text: corps, attachments,
+      mid = (await t.sendMail({ from: { name: s.nom, address: de }, replyTo: s.email || undefined, to, subject: sujet, text: corps, attachments,
         ...(reponseA && { inReplyTo: reponseA, references: reponseA }) })).messageId || null;
       statut = attachments.length ? 'envoyé avec PDF' : 'envoyé';
+      break;
     } catch (e) { statut = 'échec : ' + e.message; }
   }
   run('INSERT INTO emails (compte_id, a, sujet, corps, statut, document_id, chantier_id, client_id, message_id) VALUES (?,?,?,?,?,?,?,?,?)', cid, to || '', sujet, corps, statut, document_id, chantier_id, client_id, mid);
@@ -387,6 +402,13 @@ const htmlText = html => html.replace(/<(style|script)[\s\S]*?<\/\1>/gi, '').rep
 const sansCitation = t => t.replace(/\r/g, '').split(/\n(?:Le .{5,200}a écrit ?:|On .{5,200}wrote:|-{2,} ?(?:Original Message|Message d'origine)|De ?: .+\n(?:Envoyé|Date) ?:|>)/)[0].trim();
 const sqlDate = d => new Date(d || Date.now()).toISOString().slice(0, 19).replace('T', ' ');
 const enCours = new Set();
+// Serveurs connus d'après l'adresse : l'artisan ne donne que son adresse et un mot de passe d'application.
+// ponytail: liste des fournisseurs courants en France ; les autres indiquent leur serveur IMAP. Outlook/Hotmail n'acceptent plus que la connexion Microsoft (OAuth), pas faite.
+const FOURNISSEURS = { 'gmail.com': 'imap.gmail.com', 'googlemail.com': 'imap.gmail.com', 'yahoo.fr': 'imap.mail.yahoo.com', 'yahoo.com': 'imap.mail.yahoo.com',
+  'orange.fr': 'imap.orange.fr', 'wanadoo.fr': 'imap.orange.fr', 'free.fr': 'imap.free.fr', 'sfr.fr': 'imap.sfr.fr', 'neuf.fr': 'imap.sfr.fr',
+  'laposte.net': 'imap.laposte.net', 'icloud.com': 'imap.mail.me.com', 'me.com': 'imap.mail.me.com' };
+const smtpDe = host => ({ 'imap.mail.me.com': ['smtp.mail.me.com', 587], 'imap.ethereal.email': ['smtp.ethereal.email', 587] })[host]
+  || (/^imap\./.test(host) ? [host.replace(/^imap\./, 'smtp.'), 465] : null);
 const imapOpts = s => ({ host: s.imap_host, port: +s.imap_port || 993, secure: +s.imap_port !== 143, auth: { user: s.imap_user, pass: s.imap_pass }, logger: false });
 const nomPj = x => String(x.dispositionParameters?.filename || x.parameters?.name || '');
 async function releverBoite(cid) {
@@ -446,7 +468,7 @@ async function releverBoite(cid) {
     throw httpErr(502, 'Boîte mail : ' + msg);
   } finally { enCours.delete(cid); await imap.logout().catch(() => {}); }
 }
-setInterval(() => { for (const { id } of all('SELECT id FROM comptes')) releverBoite(id).catch(e => console.error(e.message)); }, 600e3);
+setInterval(() => { for (const { id } of all('SELECT id FROM comptes WHERE bac IS NULL')) releverBoite(id).catch(e => console.error(e.message)); }, 600e3);
 
 // Résumé envoyé au pro chaque matin (à partir de 7 h, une fois par jour, seulement s'il y a quelque chose).
 function resumeTexte(cid) {
@@ -500,7 +522,7 @@ async function tacheHoraire() {
   run('DELETE FROM sessions WHERE expires < ?', new Date().toISOString());
   run('DELETE FROM resets WHERE expires < ?', new Date().toISOString());
   try { sauvegarde(); } catch (e) { console.error('Sauvegarde :', e.message); }
-  for (const { id } of all('SELECT id FROM comptes')) {
+  for (const { id } of all('SELECT id FROM comptes WHERE bac IS NULL')) { // pas les comptes d'exemple : ni relance, ni résumé, ni appel à Claude
     await relances(id).catch(console.error);
     await resumeMatin(id).catch(console.error);
     await rappelsRdv(id).catch(console.error);
@@ -538,34 +560,49 @@ async function askClaude(system, prompt, schema, fichier, onPartial, opts = {}) 
 // et attend sa consigne sur l'entrée standard (un premier '\n' tout de suite : sans rien reçu en 3 s, il abandonne).
 // Coupé sans consigne (serveur arrêté), il finit en erreur « only whitespace », sans requête.
 const chauds = new Map(); // arguments → processus prêt
-function lancerClaude(args) {
+// Plusieurs comptes Claude : CLAUDE_COMPTES (.env) = dossiers de config d'autres comptes (CLAUDE_CONFIG_DIR), séparés par « ; ».
+// '' = le compte par défaut. Limite atteinte ou compte déconnecté → le suivant, qui reste utilisé tant qu'il marche.
+const COMPTES = ['', ...(process.env.CLAUDE_COMPTES || '').split(';').map(c => c.trim()).filter(Boolean)];
+let compte = 0;
+function lancerClaude(args, cfg) {
   const dir = fs.mkdtempSync(path.join(os.tmpdir(), 'devis-ia-'));
   // Sans shell : aucun texte utilisateur n'est interprété ; la consigne passe par l'entrée standard.
-  const p = spawn(process.env.CLAUDE_BIN || 'claude', args, { cwd: dir, windowsHide: true, env: { ...process.env, ANTHROPIC_API_KEY: '' } });
+  const p = spawn(process.env.CLAUDE_BIN || 'claude', args, { cwd: dir, windowsHide: true, env: { ...process.env, ANTHROPIC_API_KEY: '', ...(cfg && { CLAUDE_CONFIG_DIR: cfg }) } });
   p.dir = dir;
   p.on('error', e => { p.erreur = e; });
   p.on('close', () => { try { fs.rmSync(dir, { recursive: true, force: true }); } catch {} });
   p.stdin.write('\n');
   return p;
 }
-function prendreClaude(args, chaud) {
-  if (!chaud) return lancerClaude(args);
-  const cle = JSON.stringify(args), p = chauds.get(cle);
+function prendreClaude(args, chaud, cfg) {
+  if (!chaud) return lancerClaude(args, cfg);
+  const cle = JSON.stringify([cfg, args]), p = chauds.get(cle);
   chauds.delete(cle);
   if (p) clearTimeout(p.oubli);
-  const n = lancerClaude(args);
+  const n = lancerClaude(args, cfg);
   n.oubli = setTimeout(() => { if (chauds.get(cle) === n) chauds.delete(cle); n.kill(); }, 15 * 60e3); // inutilisé 15 min : libéré
   chauds.set(cle, n);
   if (chauds.size > 6) { const [k, v] = chauds.entries().next().value; chauds.delete(k); clearTimeout(v.oubli); v.kill(); }
-  return p && !p.erreur && p.exitCode === null && p.signalCode === null ? p : lancerClaude(args);
+  return p && !p.erreur && p.exitCode === null && p.signalCode === null ? p : lancerClaude(args, cfg);
 }
 
 async function askClaudeCode(system, prompt, schema, fichier, onPartial, opts = {}) {
+  for (let essais = 1; ; essais++) {
+    const n = compte;
+    try { return await askCompte(COMPTES[n], system, prompt, schema, fichier, onPartial, opts); }
+    catch (e) {
+      if (![429, 503].includes(e.status) || /introuvable/.test(e.message) || essais >= COMPTES.length) throw e;
+      if (compte === n) compte = (n + 1) % COMPTES.length;
+      console.log(`IA : compte Claude ${n + 1} indisponible (${e.message}), passage au compte ${compte + 1}`);
+    }
+  }
+}
+async function askCompte(cfg, system, prompt, schema, fichier, onPartial, opts) {
   const args = ['-p', '--output-format', onPartial ? 'stream-json' : 'json', ...(onPartial ? ['--verbose', '--include-partial-messages'] : []),
     '--no-session-persistence', '--strict-mcp-config', '--setting-sources', '',
     '--system-prompt', system, '--json-schema', JSON.stringify(schema), '--tools', fichier ? 'Read' : '', ...(fichier ? ['--allowedTools', 'Read'] : []),
     ...(process.env.CLAUDE_MODEL ? ['--model', process.env.CLAUDE_MODEL] : opts.modele ? ['--model', opts.modele] : opts.rapide ? ['--model', 'sonnet', '--effort', 'low'] : [])];
-  const p = prendreClaude(args, opts.chaud && !fichier), dir = p.dir;
+  const p = prendreClaude(args, opts.chaud && !fichier, cfg), dir = p.dir;
   if (fichier) {
     const noms = [].concat(fichier).map((f, i) => {
       const nom = `${f.nom || (i ? 'document' + (i + 1) : 'document')}.${f.type === 'application/pdf' ? 'pdf' : f.type.split('/')[1]}`;
@@ -618,15 +655,19 @@ ${prompt}`;
 
 async function askApi(system, prompt, schema, fichier, onPartial, opts = {}) {
   const blocks = [].concat(fichier || []).map(f => ({ type: f.type === 'application/pdf' ? 'document' : 'image', source: { type: 'base64', media_type: f.type, data: f.data } }));
+  // mêmes choix qu'avec Claude Code : Haiku pour « Parler à Kadra », Sonnet pour recopier des documents (coût ÷ 40 et ÷ 2)
+  const model = process.env.CLAUDE_MODEL || (opts.modele === 'haiku' ? 'claude-haiku-5-5' : opts.rapide ? 'claude-sonnet-5-5' : MODEL);
   const params = {
-    model: MODEL, max_tokens: 16000, system,
-    betas: ['server-side-fallback-2026-07-01'], fallbacks: 'default',
+    model, max_tokens: 16000, system,
+    ...(!model.includes('haiku') && { betas: ['server-side-fallback-2026-07-01'], fallbacks: 'default' }), // pas de repli côté serveur pour Haiku
     output_config: { effort: opts.rapide ? 'low' : 'medium', format: { type: 'json_schema', schema } },
     messages: [{ role: 'user', content: blocks.length ? [...blocks, { type: 'text', text: prompt }] : prompt }],
   };
   const msg = onPartial
     ? await ai().beta.messages.stream(params).on('text', (_, snapshot) => onPartial(snapshot)).finalMessage()
     : await ai().beta.messages.create(params);
+  const u = msg.usage; // journal du coût réel, pour vérifier la prévision
+  console.log(`IA ${model} : ${u.input_tokens + (u.cache_read_input_tokens || 0)} entrée, ${u.output_tokens} sortie`);
   if (msg.stop_reason === 'refusal') throw httpErr(422, 'La demande a été refusée par l’IA.');
   if (msg.stop_reason === 'max_tokens') throw httpErr(422, 'Réponse de l’IA trop longue : découpez la dictée.');
   return JSON.parse(msg.content.filter(b => b.type === 'text').map(b => b.text).join(''));
@@ -932,7 +973,19 @@ function ics(cid) {
 }
 
 const TEMPLATE_SCHEMA = S({ nom: str, html: str });
-async function aiTemplate({ file, nom }, cid) {
+// Images d'un Word, d'un Excel ou d'un PDF (les petites ou vides sont écartées), pour en tirer le logo et le cachet.
+async function imagesDe(file) {
+  const m = /^data:([\w/+.-]+);base64,(.+)$/s.exec(file || '');
+  if (!m) return [];
+  const buf = Buffer.from(m[2], 'base64');
+  const l = buf.readUInt32LE(0) === 0x04034b50 ? zipImages(buf) : m[1] === 'application/pdf' ? await pdfImages(buf) : [];
+  return l.filter(i => i.data.length > 1500 && i.data.length < 2e6).slice(0, 6); // ponytail: photo ou scan = rien de découpé
+}
+// source (facultatif) : le fichier d'origine de l'artisan quand file est sa conversion (Word → PDF) : ses images sont meilleures.
+async function aiTemplate({ file, nom, source }, cid) {
+  let imgs = await imagesDe(source).catch(() => []);
+  if (!imgs.length) imgs = await imagesDe(file).catch(() => []);
+  imgs = imgs.map((i, n) => ({ type: i.type, data: i.data.toString('base64'), nom: 'image' + (n + 1) }));
   const m = /^data:([\w/+.-]+);base64,(.+)$/.exec(file || '');
   if (!m) throw httpErr(400, 'Fichier invalide.');
   let [, type, data] = m, grille = '';
@@ -950,20 +1003,28 @@ ${Object.entries(PLACEHOLDERS).map(([k, l]) => `- {{${k}}} : ${l}`).join('\n')}
 Les coordonnées de l'entreprise s'écrivent avec les balises {{entreprise.x}} (ex. pied de page « {{entreprise.adresse}} – Tél. {{entreprise.tel}} – SIRET {{entreprise.siret}} »), jamais en dur.
 
 Blocs produits automatiquement : ne les recrée pas, place-les et style-les en CSS. Voici exactement le HTML qu'ils produisent (données d'exemple) :
-${['logo', 'bloc_client', 'bloc_entreprise', 'lignes', 'totaux', 'signature', 'mentions'].map(k => `{{{${k}}}} →\n${ex[k] || '(vide : pas de logo dans les paramètres)'}`).join('\n\n')}
+${['logo', 'cachet', 'bloc_client', 'bloc_entreprise', 'lignes', 'totaux', 'signature', 'mentions'].map(k => `{{{${k}}}} →\n${ex[k] || '(vide : pas encore d’image dans les paramètres)'}`).join('\n\n')}
 
 Tableau des lignes : ses colonnes se choisissent dans le <head> pour correspondre au document, dans le même ordre et avec les mêmes intitulés :
 <meta name="kadra-colonnes" content="designation=Description;qte=Quantité;pu=Prix unitaire;total=Montant">
 Clés : num (numéro de ligne), designation, qte, unite, pu (prix unitaire HT), tva, total (montant HT). Ajoute « ;soustotaux » seulement si le document montre un sous-total par section. Sans colonne unité, l'unité suit la quantité.
 Chaque cellule porte la classe de sa colonne (th.c-pu, td.c-designation…) ; les titres de section sont des tr.section ; les colonnes chiffrées ont la classe .n (alignées à droite). Style les colonnes par ces classes (largeur, alignement, bordures), jamais par position (pas de :first-child, :not(:first-child), nth-child).
 {{{logo}}} est une <img class="logo"> : règle sa taille avec img.logo{…} et ne donne pas la classe « logo » à un autre élément.
+{{{cachet}}} est une <img class="cachet"> (tampon et signature de l'entreprise) : si le document en montre un, place {{{cachet}}} au même endroit et règle sa taille avec img.cachet{…} ; sinon ne le mets pas.
 Un grand total mis en valeur (bandeau, encadré) utilise {{doc.total_ttc}}.
 Commence le <style> par {{{css_base}}}. Le texte fixe (titres, libellés, conditions, pied de page) est gardé tel quel ; les données d'exemple (client, lignes, montants, dates, numéros, taux et montant d'acompte, coordonnées) deviennent des balises ou disparaissent ({{{mentions}}} donne déjà l'acompte et les mentions légales).
 Pour une feuille Excel : ne recopie pas la grille du tableur (pas de quadrillage, pas de colonnes fixes) ; retrouve les blocs du devis et reproduis leur place, leur ordre, leurs couleurs, leurs bordures et leurs polices.
 Aucun JavaScript, aucune ressource externe (polices système uniquement). nom = nom court du gabarit.`;
   const xl = grille && `Feuille Excel du devis, reconstruite en HTML (cellules fusionnées, couleurs, bordures et polices d'origine)${type ? ' ; la capture de cette feuille est jointe' : ''} :\n${grille}`;
   const original = type && { type, data, nom: 'original' };
-  let out = await askClaude(system, [xl, 'Crée le gabarit HTML de ce document.'].filter(Boolean).join('\n\n'), TEMPLATE_SCHEMA, original);
+  const vus = imgs.length && `Images trouvées dans le fichier, jointes après l'original, dans l'ordre : ${imgs.map(i => i.nom).join(', ')}.
+logo = nom de l'image (ex. « image1 ») qui est le logo de l'entreprise ; cachet = celle du tampon et/ou de la signature de l'entreprise ; '' si aucune. Les autres images (pied de page, décor) ne sont ni l'un ni l'autre.`;
+  let out = await askClaude(system, [xl, vus, 'Crée le gabarit HTML de ce document.'].filter(Boolean).join('\n\n'),
+    imgs.length ? S({ nom: str, html: str, logo: str, cachet: str }) : TEMPLATE_SCHEMA, imgs.length ? [original, ...imgs].filter(Boolean) : original);
+  // Logo et cachet du document → identité de l'entreprise (avant le rendu de relecture, pour qu'il les montre)
+  const image = n => imgs.find(i => i.nom === String(n || '').replace(/\.\w+$/, ''));
+  const trouve = Object.fromEntries(['logo', 'cachet'].flatMap(k => (image(out[k]) ? [[k, `data:${image(out[k]).type};base64,${image(out[k]).data}`]] : [])));
+  if (Object.keys(trouve).length) { saveSettings(cid, trouve); Object.assign(s, trouve); }
   // Relecture : Claude voit son gabarit rendu à côté de l'original et corrige les écarts (sans Chrome : on garde le premier jet).
   const rendu = await htmlToPng(stripScripts(renderDoc({ ...SAMPLE, compte_id: cid }, s, out.html))).catch(() => null);
   if (rendu) {
@@ -1149,7 +1210,7 @@ function openSession(ctx, userId) {
 }
 const userOf = req => {
   const token = sidOf(req);
-  return token && get('SELECT u.id, u.compte_id, u.email, u.nom, u.role, u.langue, u.langue2 FROM sessions s JOIN users u ON u.id=s.user_id WHERE s.token=? AND s.expires > ?', sha(token), new Date().toISOString());
+  return token && get('SELECT u.id, COALESCE(u.bac, u.compte_id) compte_id, u.bac, u.email, u.nom, u.role, u.langue, u.langue2 FROM sessions s JOIN users u ON u.id=s.user_id WHERE s.token=? AND s.expires > ?', sha(token), new Date().toISOString());
 };
 const essais = new Map(); // anti force brute : 10 échecs / 15 min / IP
 const fenetre = e => e && Date.now() - e.t < 15 * 60e3;
@@ -1230,8 +1291,25 @@ on('POST', '/api/auth/reset', (ctx) => {
   openSession(ctx, r.user_id);
   return { ok: true };
 }, PUB);
-on('GET', '/api/me', ({ user, cid }) => ({ user: { id: user.id, email: user.email, nom: user.nom, role: user.role, langue: user.langue, langue2: user.langue2 }, compte: cid, entreprise: settings(cid).nom, stripe: !!settings(cid).stripe_secret, kadra: isKadra(user),
+on('GET', '/api/me', ({ user, cid }) => ({ user: { id: user.id, email: user.email, nom: user.nom, role: user.role, langue: user.langue, langue2: user.langue2 }, compte: cid, presentation: !!user.bac, entreprise: settings(cid).nom, stripe: !!settings(cid).stripe_secret, kadra: isKadra(user),
   voix: process.env.AZURE_SPEECH_KEY ? VOIX : null }));
+// Présentation : l'artisan découvre chaque page sur l'entreprise d'exemple (copie de la démo, dates avancées à aujourd'hui),
+// puis retrouve son propre compte, intact. Rien de ce qu'il fait pendant la présentation n'y reste.
+const finPresentation = user => {
+  if (!user.bac) return;
+  run('UPDATE users SET bac=NULL WHERE bac=?', user.bac);
+  for (const t of ['emails', 'envois']) run(`DELETE FROM ${t} WHERE compte_id=?`, user.bac); // sans clé étrangère vers comptes
+  run('DELETE FROM comptes WHERE id=? AND bac=1', user.bac);
+};
+on('POST', '/api/presentation', ({ user }) => {
+  finPresentation(user);
+  const b = Number(run('INSERT INTO comptes (bac) VALUES (1)').lastInsertRowid);
+  db.exec('BEGIN');
+  try { remplirDemo(db, b, { url: PUBLIC_URL, jours: Math.round((Date.parse(today()) - Date.parse('2026-10-31')) / 864e5) }); db.exec('COMMIT'); } catch (e) { db.exec('ROLLBACK'); run('DELETE FROM comptes WHERE id=?', b); throw e; }
+  run('UPDATE users SET bac=? WHERE id=?', b, user.id);
+  return { ok: true };
+});
+on('DELETE', '/api/presentation', ({ user }) => { finPresentation(user); return { ok: true }; });
 // Voix de Kadra fabriquée par Azure Speech : une voix native par langue (accent turc pour le turc, marocain pour le darija…), la même sur tous les appareils.
 // .env : AZURE_SPEECH_KEY + AZURE_SPEECH_REGION (ex. francecentral). Sans clé : le navigateur lit avec les voix de l'appareil.
 const VOIX = Object.fromEntries(Object.entries({ 'fr-FR': 'Denise Henri', 'pt-PT': 'Raquel Duarte', 'pt-BR': 'Francisca Antonio', 'es-ES': 'Elvira Alvaro', 'it-IT': 'Elsa Diego',
@@ -1724,6 +1802,25 @@ on('GET', '/api/pieces/:id', ({ cid, p }) => {
   return { file: Buffer.from(f.data), type: SURS.includes(f.type) ? f.type : 'application/octet-stream', name: String(f.nom).normalize('NFD').replace(/[^\w.\- ()]/g, '_') };
 });
 on('POST', '/api/boite/relever', async ({ cid }) => ({ nouveaux: await releverBoite(cid) }));
+// 1re connexion (ou Paramètres) : adresse + mot de passe d'application, connexion essayée avant d'enregistrer
+on('POST', '/api/boite/brancher', async ({ cid, body }) => {
+  const user = String(body.email || '').trim(), dom = user.split('@')[1]?.toLowerCase();
+  const host = String(body.host || '').trim().toLowerCase() || FOURNISSEURS[dom];
+  const pass = FOURNISSEURS[dom] === 'imap.gmail.com' ? String(body.pass || '').replace(/\s/g, '') : String(body.pass || ''); // Google l'affiche en 4 blocs
+  if (!/^[^@\s]+@[^@\s]+\.[a-z]{2,}$/i.test(user) || !pass) throw httpErr(400, 'Indiquez votre adresse e-mail et le mot de passe d’application.');
+  if (!host) throw httpErr(400, 'Kadra ne connaît pas le serveur de cette adresse : indiquez-le dans « Autre fournisseur ».');
+  if (!/^[a-z0-9.-]+\.[a-z]{2,}$/.test(host)) throw httpErr(400, 'Serveur IMAP invalide.');
+  const s = { imap_host: host, imap_port: 993, imap_user: user, imap_pass: pass };
+  const imap = new ImapFlow({ ...imapOpts(s), connectionTimeout: 15e3, greetingTimeout: 15e3 });
+  try { await imap.connect(); await imap.logout(); } catch (e) {
+    throw httpErr(400, e.authenticationFailed || /auth|login|credential|password/i.test(e.responseText || e.message)
+      ? 'Adresse ou mot de passe refusé par votre boîte mail. Utilisez un mot de passe d’application, pas votre mot de passe habituel.'
+      : 'Impossible de joindre ' + host + ' : vérifiez le serveur.');
+  }
+  saveSettings(cid, { ...s, imap_etat: {}, imap_erreur: '' });
+  releverBoite(cid).catch(e => console.error('Boîte mail :', e.message));
+  return masked(settings(cid));
+});
 on('GET', '/api/resume', ({ cid }) => resumeTexte(cid) || { n: 0 });
 on('POST', '/api/relances', ({ cid }) => relances(cid));
 // live : réponse en NDJSON, {html} à chaque étape de la rédaction puis {id} (ou {error}).
@@ -1821,7 +1918,7 @@ on('POST', '/api/kadra/demandes/:id/importer', async ({ user, p, body }) => {
   kadra(user);
   const d = demande(p.id), file = body.file || d.fichier;
   if (!IA_LIT.test(file) || (!body.file && /\.(xls|ods|docx?|odt)$/i.test(d.nom))) throw httpErr(400, 'Ce format ne se lit pas directement : ouvrez-le et enregistrez-le en PDF (Word) ou en .xlsx (Excel), puis « Avec un autre fichier ».');
-  const t = await aiTemplate({ file, nom: d.nom.replace(/\.\w+$/, '') }, d.compte_id);
+  const t = await aiTemplate({ file, nom: d.nom.replace(/\.\w+$/, ''), source: d.fichier }, d.compte_id);
   saveSettings(d.compte_id, { template_id: t.id }); // devient sa mise en page par défaut
   run("UPDATE demandes_modele SET statut='faite', template_id=? WHERE id=?", t.id, d.id);
   mailKadra(d.user_email, 'Kadra : votre modèle de devis est prêt', `Bonjour,\n\nVotre modèle de devis est maintenant dans Kadra : vos prochains devis et factures auront votre mise en page.\nVous pouvez le retoucher dans Mise en page : ${PUBLIC_URL}/#/templates\n\nL’équipe Kadra`);
@@ -1909,6 +2006,88 @@ on('DELETE', '/api/documents/:id', ({ cid, p }) => {
   if (d.type === 'facture' && d.numero) throw httpErr(400, 'Une facture émise ne peut pas être supprimée (obligation légale) : créez un avoir.');
   run('DELETE FROM documents WHERE id=? AND compte_id=?', p.id, cid); return { ok: true };
 });
+
+// ---------- Abonnement à Kadra (payé à Hivan, sur SON compte Stripe : KADRA_STRIPE_SECRET dans .env) ----------
+// ponytail: les formules ne bloquent encore rien (pas de quota ni de coupure en fin d'essai) : à décider une fois les prix arrêtés.
+const ESSAI_JOURS = 14;
+// prix = payé au mois (sans engagement) ; annuel = prix par mois payé à l'année (−20 %), facturé annuel × 12 en une fois.
+// base + points = ce que la formule AJOUTE à la précédente (c'est ce qui rend la différence lisible).
+const PLANS = [
+  { id: 'essentiel', nom: 'Essentiel', prix: 19, annuel: 15, pour: 'L’artisan seul : des devis propres et être payé à temps',
+    points: ['1 utilisateur', '15 devis dictés à la voix par mois', 'Devis, factures et avoirs sans limite', 'Signature et paiement en ligne par vos clients', 'Relances automatiques des devis et des factures', 'Chantiers, agenda, notes et dépenses', 'Facture électronique et export pour le comptable'] },
+  { id: 'pro', nom: 'Pro', prix: 49, annuel: 39, conseille: true, pour: 'Kadra devient votre secrétaire', base: 'Tout Essentiel, plus :',
+    points: ['2 utilisateurs', 'Devis dictés sans limite', 'Votre boîte mail branchée : réponses rangées, rendez-vous trouvés', 'Parler à Kadra : il fait ce que vous lui dites', 'Devis et e-mails écrits comme vous', 'Devis en 3 gammes', 'Analyse et conseils', 'Import de vos anciens devis et factures'] },
+  { id: 'equipe', nom: 'Équipe', prix: 99, annuel: 79, pour: 'L’entreprise avec un bureau ou des chefs d’équipe', base: 'Tout Pro, plus :',
+    points: ['Jusqu’à 5 utilisateurs', 'Rôles : administrateur et membre', 'Votre modèle de devis reproduit par nos soins, offert', 'Aide au démarrage par téléphone', 'Réponse prioritaire'] },
+];
+// Tableau « comparer les formules » : [ligne, Essentiel, Pro, Équipe] ; 1 = inclus, 0 = non, texte = la valeur
+const COMPARER = [
+  ['Utilisateurs', '1', '2', '5'], ['Devis dictés à la voix', '15 par mois', 'Sans limite', 'Sans limite'],
+  ['Devis, factures, avoirs', 'Sans limite', 'Sans limite', 'Sans limite'], ['Signature et paiement en ligne', 1, 1, 1],
+  ['Relances automatiques', 1, 1, 1], ['Chantiers, agenda, notes, dépenses', 1, 1, 1], ['Facture électronique, export comptable', 1, 1, 1],
+  ['Boîte mail branchée, rendez-vous trouvés', 0, 1, 1], ['Parler à Kadra', 0, 1, 1], ['Devis et e-mails écrits comme vous', 0, 1, 1],
+  ['Devis en 3 gammes', 0, 1, 1], ['Analyse et conseils', 0, 1, 1], ['Import de vos anciens documents', 0, 1, 1],
+  ['Votre modèle de devis reproduit', 0, 0, 1], ['Aide au démarrage par téléphone', 0, 0, 1],
+];
+if (!cols('comptes').includes('abonnement')) db.exec("ALTER TABLE comptes ADD COLUMN abonnement TEXT DEFAULT '{}'");
+const abo = cid => { const c = get('SELECT created_at, abonnement FROM comptes WHERE id=?', cid); return { ...JSON.parse(c.abonnement || '{}'), essai_fin: new Date(Date.parse(c.created_at + 'Z') + ESSAI_JOURS * 864e5).toISOString().slice(0, 10) }; };
+const majAbo = (cid, v) => run('UPDATE comptes SET abonnement=? WHERE id=?', JSON.stringify(v), cid);
+const KSTRIPE = () => process.env.KADRA_STRIPE_SECRET || '';
+on('GET', '/api/plans', () => ({ plans: PLANS, comparer: COMPARER, essai_jours: ESSAI_JOURS }), PUB);
+on('GET', '/api/abonnement', ({ cid }) => { const { client, sub, ...a } = abo(cid); return { ...a, paiement: !!KSTRIPE(), gerer: !!client }; });
+on('POST', '/api/abonnement', async ({ cid, user, body }) => {
+  admin(user);
+  if (user.bac) throw httpErr(400, 'Terminez d’abord la présentation : vous regardez l’entreprise d’exemple.');
+  const plan = PLANS.find(x => x.id === body.plan);
+  if (!plan) throw httpErr(400, 'Formule inconnue.');
+  if (!KSTRIPE()) throw httpErr(503, 'Le paiement de l’abonnement n’est pas encore ouvert : écrivez-nous.');
+  const an = body.periode === 'an'; // à l'année : payé en une fois, 20 % moins cher
+  const a = abo(cid), essai = Math.ceil((Date.parse(a.essai_fin) - Date.now()) / 864e5);
+  if (a.sub && a.statut === 'actif') { // déjà abonné : on change la formule ou la période de l'abonnement en cours, au prorata
+    const sub = await stripe(KSTRIPE(), 'subscriptions/' + a.sub);
+    const prod = await stripe(KSTRIPE(), 'products', { name: `Kadra ${plan.nom} (${an ? 'à l’année' : 'au mois'})` });
+    await stripe(KSTRIPE(), 'subscriptions/' + a.sub, { 'items[0][id]': sub.items.data[0].id, 'items[0][price_data][currency]': 'eur', 'items[0][price_data][product]': prod.id,
+      'items[0][price_data][unit_amount]': (an ? plan.annuel * 12 : plan.prix) * 100, 'items[0][price_data][recurring][interval]': an ? 'year' : 'month',
+      proration_behavior: 'create_prorations', 'metadata[plan]': plan.id });
+    const { essai_fin, ...reste } = a;
+    majAbo(cid, { ...reste, plan: plan.id, periode: an ? 'an' : 'mois' });
+    return { change: true };
+  }
+  const se = await stripe(KSTRIPE(), 'checkout/sessions', {
+    mode: 'subscription', client_reference_id: String(cid), 'metadata[plan]': plan.id, 'metadata[periode]': an ? 'an' : 'mois', ...(a.client ? { customer: a.client } : { customer_email: user.email }),
+    'line_items[0][quantity]': 1, 'line_items[0][price_data][currency]': 'eur', 'line_items[0][price_data][unit_amount]': (an ? plan.annuel * 12 : plan.prix) * 100,
+    'line_items[0][price_data][recurring][interval]': an ? 'year' : 'month', 'line_items[0][price_data][product_data][name]': `Kadra ${plan.nom} (${an ? 'à l’année' : 'au mois'})`,
+    ...(essai > 1 && !a.sub && { 'subscription_data[trial_period_days]': essai }), // le reste de l'essai gratuit n'est pas payé
+    success_url: `${PUBLIC_URL}/#/abonnement?session={CHECKOUT_SESSION_ID}`, cancel_url: `${PUBLIC_URL}/#/abonnement`,
+  });
+  return { url: se.url };
+});
+on('POST', '/api/abonnement/retour', async ({ cid, body }) => {
+  if (!/^cs_\w+$/.test(body.session || '') || !KSTRIPE()) throw httpErr(400, 'Paiement introuvable.');
+  const se = await stripe(KSTRIPE(), 'checkout/sessions/' + body.session);
+  if (se.client_reference_id !== String(cid) || se.status !== 'complete') throw httpErr(400, 'Paiement non terminé.');
+  majAbo(cid, { plan: se.metadata.plan, periode: se.metadata.periode, statut: 'actif', sub: se.subscription, client: se.customer });
+  return abo(cid);
+});
+on('POST', '/api/abonnement/gerer', async ({ cid, user }) => { // carte, factures, résiliation : portail Stripe
+  admin(user);
+  const a = abo(cid);
+  if (!a.client || !KSTRIPE()) throw httpErr(400, 'Aucun abonnement payant.');
+  return { url: (await stripe(KSTRIPE(), 'billing_portal/sessions', { customer: a.client, return_url: `${PUBLIC_URL}/#/abonnement` })).url };
+});
+// Renouvellement raté, résiliation, changement de formule : Stripe prévient ici (KADRA_STRIPE_WEBHOOK_SECRET)
+on('POST', '/stripe/kadra', ({ req, raw }) => {
+  signatureStripe(req, raw, process.env.KADRA_STRIPE_WEBHOOK_SECRET);
+  const ev = JSON.parse(raw), o = ev.data?.object;
+  if (/^customer\.subscription\.(updated|deleted)$/.test(ev.type)) for (const c of all('SELECT id FROM comptes')) {
+    const a = abo(c.id);
+    if (a.sub !== o.id) continue;
+    const p = o.items?.data?.[0]?.price, an = p?.recurring?.interval === 'year';
+    majAbo(c.id, { ...a, essai_fin: undefined, periode: p ? (an ? 'an' : 'mois') : a.periode, statut: ev.type.endsWith('deleted') ? 'resilie' : o.status === 'active' || o.status === 'trialing' ? 'actif' : 'impaye',
+      plan: PLANS.find(x => (an ? x.annuel * 12 : x.prix) * 100 === p?.unit_amount)?.id || a.plan });
+  }
+  return { received: true };
+}, { ...PUB, raw: true });
 
 // CRUD générique, cloisonné par entreprise
 const table = t => { if (!COLS[t]) throw httpErr(404, 'Inconnu'); return t; };
@@ -2008,12 +2187,15 @@ on('GET', '/p/:token/paye', async (ctx) => {
   ctx.status = 303; ctx.headers.Location = `/p/${d.token}`;
   return '';
 }, PUB);
+function signatureStripe(req, raw, secret) {
+  const sig = Object.fromEntries(String(req.headers['stripe-signature'] || '').split(',').map(kv => kv.split('=')));
+  const expected = crypto.createHmac('sha256', secret || '-').update(`${sig.t}.${raw}`).digest('hex');
+  if (!secret || sig.v1?.length !== expected.length || !crypto.timingSafeEqual(Buffer.from(sig.v1), Buffer.from(expected)) || Math.abs(Date.now() / 1000 - sig.t) > 300) throw httpErr(400, 'Signature Stripe invalide');
+}
 // Webhook Stripe (facultatif) : enregistre le paiement même si le client ferme la page avant la redirection.
 on('POST', '/stripe/webhook/:cid', async ({ p, raw, req }) => {
   const s = settings(p.cid);
-  const sig = Object.fromEntries(String(req.headers['stripe-signature'] || '').split(',').map(kv => kv.split('=')));
-  const expected = crypto.createHmac('sha256', s.stripe_webhook_secret || '-').update(`${sig.t}.${raw}`).digest('hex');
-  if (!s.stripe_webhook_secret || sig.v1?.length !== expected.length || !crypto.timingSafeEqual(Buffer.from(sig.v1), Buffer.from(expected)) || Math.abs(Date.now() / 1000 - sig.t) > 300) throw httpErr(400, 'Signature Stripe invalide');
+  signatureStripe(req, raw, s.stripe_webhook_secret);
   const ev = JSON.parse(raw), se = ev.data?.object;
   if (ev.type === 'checkout.session.completed' && se.payment_status === 'paid') {
     const d = get(`SELECT * FROM (${VIEWS.documents}) WHERE token=? AND compte_id=?`, se.metadata?.token, +p.cid);

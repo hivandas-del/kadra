@@ -12,9 +12,17 @@ function unzip(buf) {
     const name = buf.toString('utf8', p + 46, p + 46 + n);
     p += 46 + n + buf.readUInt16LE(p + 30) + buf.readUInt16LE(p + 32);
     const start = off + 30 + buf.readUInt16LE(off + 26) + buf.readUInt16LE(off + 28), data = buf.subarray(start, start + size);
-    files.set(name, () => (method ? zlib.inflateRawSync(data, { maxOutputLength: 50e6 }) : data).toString('utf8'));
+    files.set(name, () => (method ? zlib.inflateRawSync(data, { maxOutputLength: 50e6 }) : data));
   }
-  return name => files.get(name)?.() || '';
+  const lire = name => files.get(name)?.().toString('utf8') || '';
+  lire.files = files;
+  return lire;
+}
+
+// Images d'un Word ou d'un Excel (logo, tampon…) : PNG et JPEG de word/media ou xl/media.
+export function zipImages(buf) {
+  return [...unzip(buf).files].filter(([n]) => /^(word|xl)\/media\/[^/]+\.(png|jpe?g)$/i.test(n))
+    .map(([n, f]) => ({ type: /\.png$/i.test(n) ? 'image/png' : 'image/jpeg', data: f() }));
 }
 
 const ent = s => s.replace(/&(lt|gt|quot|apos|amp|#\d+|#x[\da-f]+);/gi, (_, c) => ({ lt: '<', gt: '>', quot: '"', apos: "'", amp: '&' })[c.toLowerCase()]

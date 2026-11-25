@@ -1,7 +1,8 @@
 // PDF (Chrome sans interface) et Factur-X : XML CII profil EN 16931 embarqué dans un PDF/A-3.
 import fs from 'node:fs';
 import puppeteer from 'puppeteer-core';
-import { PDFDocument, PDFName, PDFString, AFRelationship } from 'pdf-lib';
+import zlib from 'node:zlib';
+import { PDFDocument, PDFName, PDFString, PDFArray, PDFRawStream, AFRelationship } from 'pdf-lib';
 import { totaux, r2 } from './public/calc.js';
 
 const CHROMES = [
@@ -30,6 +31,41 @@ async function withPage(html, fn) {
   } finally { await page.close(); }
 }
 export const htmlToPdf = html => withPage(html, p => p.pdf({ format: 'A4', printBackground: true, preferCSSPageSize: true }));
+// Images d'un PDF (logo, tampon…). ponytail: seulement JPEG et Flate 8 bits RVB/gris sans prédicteur, les autres sont ignorées.
+export async function pdfImages(buf) {
+  const pdf = await PDFDocument.load(buf, { ignoreEncryption: true, updateMetadata: false }), ctx = pdf.context, N = PDFName.of;
+  const num = (d, k) => ctx.lookup(d.get(N(k)))?.asNumber?.();
+  const comp = cs => { cs = ctx.lookup(cs); if (cs === N('DeviceRGB')) return 3; if (cs === N('DeviceGray')) return 1;
+    if (cs instanceof PDFArray && cs.get(0) === N('ICCBased')) return num(ctx.lookup(cs.get(1)).dict, 'N'); };
+  const brut = s => { const f = ctx.lookup(s.dict.get(N('Filter'))), f1 = f instanceof PDFArray ? (f.size() === 1 ? f.get(0) : null) : f;
+    return f1 === N('FlateDecode') && !s.dict.get(N('DecodeParms')) ? zlib.inflateSync(s.contents) : f1 === N('DCTDecode') ? 'jpeg' : null; };
+  const streams = ctx.enumerateIndirectObjects().map(([, o]) => o).filter(o => o instanceof PDFRawStream && o.dict.get(N('Subtype')) === N('Image'));
+  const masques = new Set(streams.map(o => ctx.lookup(o.dict.get(N('SMask')))).filter(Boolean));
+  const out = [];
+  for (const o of streams) {
+    if (masques.has(o)) continue;
+    const w = num(o.dict, 'Width'), hh = num(o.dict, 'Height'), b = brut(o);
+    if (b === 'jpeg') { out.push({ type: 'image/jpeg', data: Buffer.from(o.contents) }); continue; }
+    const n = comp(o.dict.get(N('ColorSpace')));
+    if (!b || ![1, 3].includes(n) || num(o.dict, 'BitsPerComponent') !== 8 || b.length < w * hh * n) continue;
+    const m = ctx.lookup(o.dict.get(N('SMask'))), a = m && num(m.dict, 'Width') === w && num(m.dict, 'Height') === hh && brut(m);
+    const alpha = Buffer.isBuffer(a) && a.length >= w * hh ? a : null, px = (n === 3 ? 3 : 1) + (alpha ? 1 : 0);
+    const rows = Buffer.alloc((w * px + 1) * hh);
+    for (let y = 0; y < hh; y++) for (let x = 0; x < w; x++) {
+      const d = y * (w * px + 1) + 1 + x * px, s = (y * w + x) * n;
+      for (let c = 0; c < n; c++) rows[d + c] = b[s + c];
+      if (alpha) rows[d + n] = alpha[y * w + x];
+    }
+    out.push({ type: 'image/png', data: png(w, hh, (n === 3 ? 2 : 0) | (alpha ? 4 : 0), rows) });
+  }
+  return out;
+}
+function png(w, h, couleur, rows) {
+  const bloc = (t, d) => { const l = Buffer.alloc(4), c = Buffer.alloc(4), td = Buffer.concat([Buffer.from(t), d]);
+    l.writeUInt32BE(d.length); c.writeUInt32BE(zlib.crc32(td)); return Buffer.concat([l, td, c]); };
+  const ihdr = Buffer.alloc(13); ihdr.writeUInt32BE(w); ihdr.writeUInt32BE(h, 4); ihdr[8] = 8; ihdr[9] = couleur;
+  return Buffer.concat([Buffer.from([137, 80, 78, 71, 13, 10, 26, 10]), bloc('IHDR', ihdr), bloc('IDAT', zlib.deflateSync(rows)), bloc('IEND', Buffer.alloc(0))]);
+}
 export const htmlToPng = html => withPage(html, async p => { await p.setViewport({ width: 1000, height: 800 }); return p.screenshot({ fullPage: true, type: 'png' }); });
 
 // ---------- XML CII (EN 16931) ----------

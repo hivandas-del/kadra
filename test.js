@@ -108,6 +108,20 @@ assert.match(grille, /\.x1\{font-weight:700;color:#C83C1E;background:#FBE9E5\}/)
 assert.match(grille, />30 %</);
 console.log('OK : import Excel');
 
+// Images d'un PDF (logo, cachet) : une PNG transparente mise dans un PDF ressort en PNG avec sa transparence.
+{
+  const { PDFDocument } = await import('pdf-lib'), { pdfImages } = await import('./pdf.js'), zlib = await import('node:zlib');
+  const pdf = await PDFDocument.create(), page = pdf.addPage();
+  page.drawImage(await pdf.embedPng(Buffer.from('iVBORw0KGgoAAAANSUhEUgAAAAEAAAABCAYAAAAfFcSJAAAADUlEQVR42mNk+M9QDwADhgGAWjR9awAAAABJRU5ErkJggg==', 'base64')), { x: 0, y: 0 });
+  const [img, ...rien] = await pdfImages(Buffer.from(await pdf.save()));
+  assert.equal(rien.length, 0);
+  assert.equal(img.type, 'image/png');
+  assert.equal(img.data.readUInt32BE(16), 1);   // largeur
+  assert.equal(img.data[25], 6);                 // RVB + transparence
+  assert.equal(zlib.inflateSync(img.data.subarray(41, img.data.length - 16)).length, 5); // 1 ligne : filtre + RVBA
+  console.log('OK : images d’un PDF');
+}
+
 // Écritures comptables (FEC) : chaque écriture équilibrée, avoir à l'envers, franchise sans TVA.
 import { ecritures } from './public/calc.js';
 const avoirData = { lignes: [{ type: 'ligne', qte: 1, pu: -100, tva: 20 }] };

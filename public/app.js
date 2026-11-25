@@ -736,6 +736,51 @@ async function choisirLangue(first) {
   await api('me/langue', 'PUT', { langue: ME.user.langue, langue2: ME.user.langue2 || '' });
 }
 
+// Boîte mail : à la 1re connexion (après la langue) et dans Paramètres. Kadra lit les réponses des clients et envoie depuis l'adresse de l'artisan.
+// Marche à suivre selon le fournisseur de l'adresse : Gmail, Yahoo et iCloud refusent le vrai mot de passe (code « mot de passe d'application ») ; Orange, Free, SFR, La Poste prennent celui de la messagerie.
+const lienExt = (url, t) => `<a href="${url}" target="_blank" rel="noopener">${t}</a>`;
+const AIDE_BOITE = {
+  google: { label: 'Code de 16 lettres donné par Google', etapes: [
+    `Activez la ${lienExt('https://myaccount.google.com/signinoptions/twosv', 'validation en 2 étapes')} de votre compte Google, si ce n’est pas déjà fait (sans elle, l’étape 2 n’apparaît pas).`,
+    `Ouvrez ${lienExt('https://myaccount.google.com/apppasswords', 'Mots de passe des applications')}, tapez « Kadra », puis Créer. Google affiche un code de 16 lettres.`,
+    'Collez ce code ci-dessous. Ce n’est pas votre mot de passe Gmail : vous pourrez le supprimer quand vous voudrez.'] },
+  yahoo: { label: 'Code donné par Yahoo', etapes: [
+    `Ouvrez la ${lienExt('https://login.yahoo.com/account/security', 'sécurité de votre compte Yahoo')}, puis « Générer un mot de passe d’application ».`,
+    'Tapez « Kadra » : Yahoo affiche un code.', 'Collez ce code ci-dessous (pas votre mot de passe Yahoo).'] },
+  apple: { label: 'Code donné par Apple', etapes: [
+    `Ouvrez ${lienExt('https://account.apple.com', 'votre compte Apple')}, Connexion et sécurité, puis « Mots de passe pour app ».`,
+    'Tapez « Kadra » : Apple affiche un code.', 'Collez ce code ci-dessous (pas votre mot de passe Apple).'] },
+  fai: { label: 'Mot de passe de votre messagerie', etapes: [
+    'Tapez ci-dessous le mot de passe que vous utilisez pour lire vos e-mails sur le site de votre fournisseur.',
+    'S’il est refusé : dans les réglages de votre messagerie, autorisez l’accès par un logiciel (IMAP).'] },
+  autre: { label: 'Mot de passe', etapes: [
+    'Ouvrez « Autre fournisseur » ci-dessous et indiquez le serveur IMAP (demandez-le à votre fournisseur).',
+    'Tapez le mot de passe de votre messagerie, ou un « mot de passe d’application » si votre fournisseur en demande un.'] },
+};
+const aideBoite = email => {
+  const d = String(email).split('@')[1]?.toLowerCase() || '';
+  return AIDE_BOITE[/^(gmail|googlemail)\.com$/.test(d) ? 'google' : /^yahoo\./.test(d) ? 'yahoo' : /^(icloud|me|mac)\.com$/.test(d) ? 'apple'
+    : /^(orange|wanadoo|free|sfr|neuf|laposte)\.(fr|net)$/.test(d) ? 'fai' : 'autre'];
+};
+async function brancherBoite(first) {
+  let v = { email: S.imap_user || ME.user.email, pass: '', host: '' }, err = '';
+  for (;;) {
+    const a = aideBoite(v.email), etapes = a => a.etapes.map(e => `<li><span>${e}</span></li>`).join('');
+    const p = modal({ title: first ? 'Branchez votre boîte mail' : 'Ma boîte mail', ok: 'Brancher ma boîte',
+      text: `Kadra lira les réponses de vos clients et enverra vos devis depuis votre adresse. Deux minutes suffisent.${first ? ' Vous pouvez aussi le faire plus tard dans Paramètres.' : ''}`,
+      html: `${field({ name: 'email', label: 'Votre adresse e-mail', type: 'email', value: v.email, required: true })}
+<ol class="etapes" id="bx-et">${etapes(a)}</ol>
+<label class="f"><span id="bx-lb">${a.label}</span><input name="pass" type="password" value="${h(v.pass)}" required autocomplete="off"></label>
+<details class="plus"${v.host ? ' open' : ''}><summary>Autre fournisseur</summary>${field({ name: 'host', label: 'Serveur IMAP', value: v.host, placeholder: 'imap.monfournisseur.fr' })}</details>${err ? `<p class="err">${h(err)}</p>` : ''}` });
+    $('input[name=email]', dlg).oninput = e => { const n = aideBoite(e.target.value); $('#bx-et').innerHTML = etapes(n); $('#bx-lb').textContent = n.label; };
+    const r = await p;
+    if (!r) return false;
+    v = r;
+    toast('Kadra vérifie votre boîte mail…');
+    try { S = await api('boite/brancher', 'POST', v); toast('Boîte mail branchée'); return true; } catch (e) { err = e.message; }
+  }
+}
+
 const emptyData = () => ({
   client: { nom: '', adresse: '', email: '', tel: '' }, objet: '', adresse_chantier: '', remise_pct: 0, acompte_pct: S.acompte_defaut, notes: '',
   lignes: [{ type: 'ligne', designation: '', description: '', qte: 1, unite: 'u', pu: 0, tva: S.franchise_tva ? 0 : S.tva_defaut }],
@@ -919,7 +964,7 @@ function login(mode = 'login') {
     <div class="au-icons" aria-hidden="true"><i style="--n:0">${icon('helmet', 22)}</i><i class="b" style="--n:1">${icon('file', 24)}</i><i class="k" style="--n:2">${LOGO}</i><i class="b" style="--n:3">${icon('building', 24)}</i><i style="--n:4">${icon('receipt', 22)}</i></div>
     <div class="au-in"></div>
   </main>
-  <footer class="au-pied"><span class="au-pt">Kadra · devis, factures et chantiers pour les artisans du bâtiment · </span>©${new Date().getFullYear()} · Photo : Annie Spratt (Unsplash) · <label class="au-lg">${icon('globe', 14)}${choixLangueSite()}</label></footer></section></div>`; scenesLogin(); }
+  <footer class="au-pied"><span class="au-pt">Kadra · devis, factures et chantiers pour les artisans du bâtiment · </span>©${new Date().getFullYear()} · <a href="/tarifs.html">Tarifs</a> · <a href="/legal.html#mentions">Mentions légales</a> · <a href="/legal.html#cgu">CGU</a> · <a href="/legal.html#confidentialite">Confidentialité</a> · Photo : Annie Spratt (Unsplash) · <label class="au-lg">${icon('globe', 14)}${choixLangueSite()}</label></footer></section></div>`; scenesLogin(); }
   const T = { login: ['Connectez-vous à Kadra', 'Vos devis, vos chantiers et vos factures, au même endroit.'], signup: ['Créez votre entreprise', 'Votre espace est prêt en une minute.'], oubli: ['Mot de passe oublié', 'Indiquez votre e-mail : nous vous envoyons un lien pour en choisir un nouveau.'], reset: ['Nouveau mot de passe', 'Choisissez-le, vous serez connecté juste après.'] }[mode];
   const fl = (name, label, type, ac, req = true) => `<label class="fl"><input name="${name}" type="${type}" autocomplete="${ac}" placeholder=" " ${req ? 'required' : ''}><span>${label}</span></label>`;
   const mdp = fl('password', mode === 'reset' ? 'Nouveau mot de passe' : 'Mot de passe', 'password', mode === 'login' ? 'current-password' : 'new-password');
@@ -1596,7 +1641,6 @@ ${isMod ? `<a class="btn yellow" href="#/nouveau/${id}">${icon('mic')}Faire un d
  <div id="qs"></div>
  <div class="gammes" id="gammes" hidden></div>
  <div class="docbar">
-  ${emise ? '' : `<div class="voice nu"><button class="mic sm" id="mic" aria-pressed="false" aria-label="Modifier à la voix" title="Modifier à la voix">${icon('mic', 20)}</button><span class="live" id="live"></span></div>`}
   <details class="docopts"><summary class="btn">${icon('sliders', 16)}Options</summary><div class="docopts-in">
    ${isMod ? '<label class="f"><span>Nom du devis type</span><input data-o="nom" style="width:200px"></label>' : ''}
    ${emise ? '' : `<label class="f"><span>Remise %</span><input type="number" step="0.1" min="0" data-o="data.remise_pct" data-num></label>`}
@@ -1784,15 +1828,6 @@ ${isMod ? `<a class="btn yellow" href="#/nouveau/${id}">${icon('mic')}Faire un d
     $('#qs').innerHTML = q.length ? `<div class="ask">${icon('sparkle')}<div style="flex:1"><b>Kadra vous demande de vérifier :</b><ul>${q.map(x => `<li>${h(x)}</li>`).join('')}</ul></div><button class="btn" id="qok">C’est vérifié</button></div>` : '';
     if (q.length) $('#qok').onclick = () => { d.data.questions = []; drawQs(); save(); };
   };
-  if (!emise) mic($('#mic'), {
-    onLive: (f, i) => { $('#live').textContent = f + i; },
-    onFinal: async f => {
-      if (!f) return;
-      $('#live').textContent = 'Modification en cours : ' + f;
-      try { await saveNow(); await api('ai/devis', 'POST', { transcript: f, doc_id: id }); toast('Devis modifié'); route(); }
-      catch (e) { $('#live').textContent = e.message; }
-    },
-  });
 
   const actions = {
     print: () => open(`/api/documents/${id}/html?print=1`),
@@ -2511,8 +2546,8 @@ async function parametres(tab = 'entreprise') {
       + F('rdv_auto', 'Repérer les rendez-vous dans les e-mails de mes clients et me les proposer dans l’agenda', 'checkbox', { cls: 'wide' })
       + `<div class="f wide" style="flex-direction:row;gap:8px;flex-wrap:wrap"><button class="btn" id="apercu">Voir le résumé d’aujourd’hui</button><button class="btn" id="run">${icon('send', 16)}Lancer les relances maintenant</button></div>`,
       'Rien n’est envoyé à un client sans une de ces cases cochées ; les rendez-vous trouvés attendent votre accord dans l’Agenda.')
-      + sec('Ma boîte mail', `<div class="f wide"><span>${S.imap_host ? 'Kadra lit votre boîte toutes les 10 minutes et range les e-mails de vos clients sur leur fiche.' : 'Branchez votre boîte mail pour voir dans Kadra les réponses de vos clients.'}</span><div style="display:flex;gap:10px;align-items:center;flex-wrap:wrap">${S.imap_erreur ? P(h(S.imap_erreur), 'crit', 'alert') : S.imap_releve_le ? P('Relevée le ' + new Date(S.imap_releve_le).toLocaleString(LOC, { dateStyle: 'short', timeStyle: 'short' }), 'good', 'check') : P('Pas encore branchée')}${S.imap_host ? '<button class="btn" id="relever">Relever maintenant</button>' : ''}</div></div>`)
-      + plus('Brancher ou changer la boîte mail', F('imap_user', 'Adresse e-mail', 'email') + F('imap_pass', 'Mot de passe d’application', 'password', { value: '', placeholder: S.imap_pass ? '••••••••' : '', hint: S.imap_pass ? 'Enregistré. Saisissez-en un nouveau pour le remplacer.' : 'Gmail : Compte Google, Sécurité, Mots de passe des applications.' })
+      + sec('Ma boîte mail', `<div class="f wide"><span>${S.imap_host ? 'Kadra lit votre boîte toutes les 10 minutes et range les e-mails de vos clients sur leur fiche.' : 'Branchez votre boîte mail pour voir dans Kadra les réponses de vos clients.'}</span><div style="display:flex;gap:10px;align-items:center;flex-wrap:wrap">${S.imap_erreur ? P(h(S.imap_erreur), 'crit', 'alert') : S.imap_releve_le ? P('Relevée le ' + new Date(S.imap_releve_le).toLocaleString(LOC, { dateStyle: 'short', timeStyle: 'short' }), 'good', 'check') : P('Pas encore branchée')}${S.imap_host ? '<button class="btn" id="relever">Relever maintenant</button>' : ''}<button class="btn ${S.imap_host ? 'ghost' : 'primary'}" id="brancher">${S.imap_host ? 'Changer de boîte' : 'Brancher ma boîte'}</button></div></div>`)
+      + plus('Réglage à la main (serveur, port)', F('imap_user', 'Adresse e-mail', 'email') + F('imap_pass', 'Mot de passe d’application', 'password', { value: '', placeholder: S.imap_pass ? '••••••••' : '', hint: S.imap_pass ? 'Enregistré. Saisissez-en un nouveau pour le remplacer.' : 'Gmail : Compte Google, Sécurité, Mots de passe des applications.' })
         + F('imap_host', 'Serveur IMAP', 'text', { placeholder: 'imap.gmail.com' }) + F('imap_port', 'Port', 'number', { placeholder: '993' }),
         'Seuls les e-mails échangés avec vos clients sont lus et gardés ; la première fois, les 90 derniers jours.')
       + plus('Délais des relances', F('relance_devis_jours', 'Relancer un devis après (jours)', 'number') + F('relance_facture_jours', 'Intervalle entre relances de facture (jours)', 'number') + F('relances_max', 'Relances au maximum', 'number'))
@@ -2520,6 +2555,7 @@ async function parametres(tab = 'entreprise') {
       + F('mail_relance_facture', 'Relance de facture', 'textarea', { rows: 5, cls: 'wide' }) + F('mail_retard_chantier', 'Retard de chantier', 'textarea', { rows: 5, cls: 'wide' }) + F('mail_point', 'Point d’avancement', 'textarea', { rows: 5, cls: 'wide' }) + F('mail_rappel_rdv', 'Rappel de rendez-vous ({quand}, {lieu}, {objet})', 'textarea', { rows: 5, cls: 'wide' }),
       'Variables : {client} {numero} {montant} {reste} {echeance} {lien} {entreprise} {chantier} {date_fin} {avancement} {budget} {encaisse}. Tous les e-mails envoyés sont dans la rubrique E-mails.');
     if (!S.imap_host) $('[data-s="imap_user"]').addEventListener('change', e => { if (/@gmail\.com$/i.test(e.target.value)) api('settings', 'PUT', { imap_host: 'imap.gmail.com', imap_port: 993 }).then(x => { S = x; }); }); // Gmail : serveur rempli tout seul
+    $('#brancher').onclick = async () => { if (await brancherBoite()) route(); };
     if ($('#relever')) $('#relever').onclick = e => busy(e.currentTarget, async () => { try { const r = await api('boite/relever', 'POST'); toast(plural(r.nouveaux, 'nouvel e-mail', 'nouveaux e-mails') + ' rangé' + (r.nouveaux > 1 ? 's' : '')); } finally { S = await api('settings'); route(); } });
     $('#apercu').onclick = async () => { const r = await api('resume'); modal({ title: r.n ? r.sujet : 'Rien à traiter aujourd’hui', ok: 'Fermer', wide: true, html: r.n ? `<pre style="white-space:pre-wrap;font:inherit">${h(r.corps)}</pre>` : '' }); };
     $('#run').onclick = e => busy(e.currentTarget, async () => { const r = await api('relances', 'POST'); toast(r.length ? `${plural(r.length, 'e-mail')} traité${r.length > 1 ? 's' : ''}` : 'Rien à relancer pour le moment'); route(); });
@@ -2575,7 +2611,8 @@ ${field({ name: 'ancien', label: 'Mot de passe actuel', type: 'password', requir
 <section class="panel"><div class="ph"><h2>Langue de l’appli</h2></div><div class="pb" style="display:flex;justify-content:space-between;align-items:center;gap:12px;flex-wrap:wrap"><span class="muted">Les menus, boutons et messages de Kadra, sur cet appareil. Vos devis et factures restent en français.</span>${choixLangueSite()}</div></section>
 <section class="panel"><div class="ph"><h2>Langue de dictée</h2></div><div class="pb" style="display:flex;justify-content:space-between;align-items:center;gap:12px;flex-wrap:wrap"><div><b>${h(nomLangue(maLangue()))}${langue2() ? ` + ${h(nomLangue(langue2()))}` : ' seulement'}</b><br><span class="muted">${LANGUE_AIDE}</span></div><button class="btn" id="lg">Changer</button></div></section>
 <section class="panel"><div class="ph"><h2>Voix de Kadra</h2></div><div class="pb" style="display:flex;justify-content:space-between;align-items:center;gap:12px;flex-wrap:wrap"><div><b>${[maLangue(), langue2()].filter(Boolean).map(l => `${h(nomLangue(l))} : ${h(nomVoix(l))}`).join('<br>')}</b><br><span class="muted">La voix qui vous lit les réponses de Kadra, dans la langue où vous lui parlez. Propre à cet appareil.</span></div><button class="btn" id="vx">Changer</button></div></section>
-<section class="panel"><div class="ph"><h2>Visite guidée</h2></div><div class="pb" style="display:flex;justify-content:space-between;align-items:center;gap:12px;flex-wrap:wrap"><span class="muted">Refaire pas à pas un chantier d’exemple, du devis au paiement. L’exemple s’efface à la fin.</span><button class="btn" id="revis">${icon('sparkle', 16)}Revoir la visite</button></div></section>
+<section class="panel"><div class="ph"><h2>Visite guidée</h2></div><div class="pb" style="display:flex;justify-content:space-between;align-items:center;gap:12px;flex-wrap:wrap"><span class="muted">Visiter Kadra sur une entreprise d’exemple, puis revenir à votre compte, intact.</span><button class="btn" id="revis">${icon('sparkle', 16)}Revoir la visite</button></div></section>
+<section class="panel"><div class="ph"><h2>Abonnement et conditions</h2></div><div class="pb" style="display:flex;gap:10px;flex-wrap:wrap"><a class="btn" href="#/abonnement">${icon('receipt', 16)}Mon abonnement</a><a class="btn ghost" href="/legal.html#cgu" target="_blank" rel="noopener">Conditions d’utilisation</a><a class="btn ghost" href="/legal.html#confidentialite" target="_blank" rel="noopener">Vos données</a><a class="btn ghost" href="/legal.html#mentions" target="_blank" rel="noopener">Mentions légales</a></div></section>
 <section class="panel"><div class="pb" style="display:flex;justify-content:space-between;align-items:center;gap:12px;flex-wrap:wrap"><div><b>${h(ME.user.email)}</b><br><span class="muted">${h(ME.entreprise)}</span></div><button class="btn" id="out">${icon('logout', 16)}Se déconnecter</button></div></section>`;
     $('#pw').onsubmit = async e => { e.preventDefault(); try { await api('me/password', 'PUT', Object.fromEntries(new FormData(e.target))); e.target.reset(); toast('Mot de passe changé'); } catch (err) { toast(err.message, 'crit'); } };
     $('#out').onclick = async () => { await api('auth/logout', 'POST'); login(); };
@@ -2836,10 +2873,10 @@ ${d.template_id ? `<a class="btn" href="/api/kadra/templates/${d.template_id}/ap
 
 // ---------- Routeur ----------
 // ---------- Visite guidée (1re connexion) ----------
-// Un chantier d'exemple, du devis au paiement : l'artisan fait chaque geste lui-même, la bulle passe à la suite quand c'est fait.
-// Le devis dicté pendant la visite porte data.exemple : sa facture ne prend jamais de numéro et Kadra n'en apprend rien (server.js).
-// État par utilisateur : { e: étape (-1 = finie), devis, chantier, facture, avant: clients déjà là, vus: pages déjà expliquées }.
-// ponytail: gardé sur l'appareil (localStorage) : sur un 2e appareil d'un compte encore vide, la visite repart ; passer dans users si ça gêne.
+// L'artisan visite Kadra sur l'entreprise d'exemple (Yildiz Rénovation, copie de la démo : POST /api/presentation) : chaque page remplie,
+// et un chantier qu'il fait lui-même, du devis dicté au paiement. À la fin, DELETE /api/presentation efface l'exemple : il retrouve son compte.
+// État par utilisateur : { e: étape (-1 = finie), devis, chantier, facture, vus: pages déjà expliquées }.
+// ponytail: gardé sur l'appareil (localStorage) ; sur un autre appareil pendant la présentation, le bandeau « Revenir à mon compte » suffit.
 const cleVis = () => 'kadra_visite_' + ME?.user.id;
 let VIS = null, visTimer = 0, visCle = '', visVu = '', visBusy = false, visDoc = { t: 0, id: 0, d: null };
 const visLire = () => { try { return JSON.parse(localStorage.getItem(cleVis())); } catch { return null; } };
@@ -2854,37 +2891,37 @@ const visDocVu = async id => { // le document suivi, relu au plus toutes les 2 s
 };
 const phraseExemple = () => `Devis pour Madame Exemple, 12 rue des Lilas à Lyon, e-mail ${ME.user.email}. Rénovation de la salle de bain : dépose de l’ancienne baignoire 350 euros, fourniture et pose d’un receveur de douche 450 euros, faïence murale 12 mètres carrés à 65 euros le mètre carré, nettoyage de fin de chantier 120 euros.`;
 const pDevis = () => '#/doc/' + VIS.devis, pChantier = () => '#/chantier/' + VIS.chantier, pFacture = () => '#/doc/' + VIS.facture;
+const rubrique = r => ({ page: '#/' + r, aide: r, ok: ['Suivant'] }); // titre et texte : ceux de l'aide de la page (AIDES)
 // page : où se passe l'étape (on y va tout seul) ; cible : ce que la bulle montre ; fini : le geste est fait → étape suivante ;
 // ok : [bouton, action] (sans action : étape suivante) ; besoin : étape sautée s'il manque ce morceau de l'exemple ; centre : bulle au milieu, écran assombri.
 const ETAPES = [
-  { centre: true, titre: 'Bienvenue sur Kadra', texte: 'On va faire ensemble un chantier d’exemple, du devis jusqu’au paiement. Vous faites chaque geste vous-même, ça prend 5 minutes. À la fin, on efface l’exemple.', ok: ['C’est parti'], non: 'Plus tard' },
-  { page: '#/parametres', cible: '#tab > :first-child', titre: 'Votre entreprise', texte: 'Votre nom, votre adresse et votre logo s’impriment sur chaque devis et chaque facture (le SIRET et l’IBAN juste en dessous). Remplissez ce que vous avez sous la main : c’est enregistré tout seul.', ok: ['C’est fait'] },
-  { page: '#/nouveau', cible: '.micwrap', titre: 'Dictez le devis', texte: 'Appuyez sur le micro et décrivez les travaux comme à un collègue : le client, ce qu’il faut faire, les prix. Rappuyez quand c’est fini. Pas de micro sous la main ? Prenez une phrase d’exemple.',
+  { centre: true, titre: 'Bienvenue sur Kadra', texte: 'On vous fait visiter Kadra avec une entreprise d’exemple, Yildiz Rénovation : ses devis, ses chantiers, ses clients, son agenda. Essayez tout, rien ne compte. À la fin, vous retrouvez votre compte, vide et prêt.', ok: ['C’est parti', () => visEntrer()], non: 'Plus tard' },
+  { page: '#/', cible: '.kpi.ca-an', titre: 'L’accueil', texte: 'Chaque matin, l’essentiel : le chiffre d’affaires, qui doit de l’argent, ce qu’il reste à facturer, les rendez-vous du jour et ce que Kadra a fait tout seul.', ok: ['Suivant'] },
+  rubrique('devis'),
+  { page: '#/nouveau', cible: '.micwrap', titre: 'À vous : dictez un devis', texte: 'Appuyez sur le micro et décrivez les travaux comme à un collègue : le client, ce qu’il faut faire, les prix. Rappuyez quand c’est fini. Pas de micro sous la main ? Prenez une phrase d’exemple.',
     ok: ['Phrase d’exemple', () => { if ($('#txt')) $('#txt').value = phraseExemple(); }], fini: () => $('#txt')?.value.trim().length > 30 && $('#mic')?.getAttribute('aria-pressed') !== 'true' },
   { page: '#/nouveau', cible: '#go', titre: 'Kadra rédige', texte: 'Relisez le texte (il se corrige au clavier), puis appuyez sur « Rédiger le devis » : Kadra le met en forme, en français, avec les prix et la TVA. Comptez une quinzaine de secondes.',
     fini: () => { const id = docIci(); if (id) VIS.devis = id; return !!id; } },
-  { page: pDevis, besoin: 'devis', cible: '#pv', titre: 'Votre devis', texte: 'Il se modifie comme sur papier : cliquez sur un prix, une quantité ou un texte et changez-le, les totaux suivent. Essayez !', ok: ['Suivant'], fini: () => $('#saved')?.textContent === 'Enregistré' },
-  { page: pDevis, besoin: 'devis', cible: '.voice .mic', titre: 'Ou à la voix', texte: 'Ce micro modifie le devis quand vous parlez. Dites par exemple « ajoute 3 prises électriques à 45 euros ».', ok: ['Suivant'] },
+  { page: pDevis, besoin: 'devis', cible: '#pv', titre: 'Le devis', texte: 'Il se modifie comme sur papier : cliquez sur un prix, une quantité ou un texte et changez-le, les totaux suivent. Essayez !', ok: ['Suivant'], fini: () => $('#saved')?.textContent === 'Enregistré' },
   { page: pDevis, besoin: 'devis', cible: '#send', titre: 'Envoyez-le au client', texte: 'Appuyez sur « Envoyer ». Pour l’essai, l’e-mail part à votre propre adresse : vous recevez ce que reçoit le client, avec le PDF et le lien pour signer.',
     fini: async () => { const d = await visDocVu(VIS.devis); return !!d && d.statut !== 'brouillon'; } },
   { centre: true, besoin: 'devis', titre: 'Le client signe', texte: 'Le client ouvre le lien sur son téléphone, lit le devis et signe du doigt. Jouez le client : ouvrez sa page, signez tout en bas, puis revenez ici.',
     ok: ['Ouvrir la page du client', () => (visDoc.d?.token ? open('/p/' + visDoc.d.token, '_blank') : toast('Un instant…'))],
     fini: async () => { const d = await visDocVu(VIS.devis); if (d?.statut === 'accepte' && d.chantier_id) VIS.chantier = d.chantier_id; return !!VIS.chantier; } },
-  { centre: true, besoin: 'chantier', titre: 'Signé ! Le chantier est créé', texte: 'Kadra a passé le devis en « accepté », créé le chantier tout seul et vous a prévenu par e-mail. Allons le voir.',
+  { centre: true, besoin: 'chantier', titre: 'Signé ! Le chantier est créé', texte: 'Kadra a passé le devis en « accepté », créé le chantier tout seul et prévenu l’artisan par e-mail. Allons le voir.',
     ok: ['Voir le chantier', () => { location.hash = pChantier(); }], fini: () => sur(pChantier()) },
-  { page: pChantier, besoin: 'chantier', cible: 'section.panel:has(.avbig)', titre: 'Le suivi du chantier', texte: 'Touchez 25 %, 50 %… pour dire où en sont les travaux. Plus bas : l’argent du chantier, vos achats et les photos.', ok: ['Suivant'] },
+  { page: pChantier, besoin: 'chantier', cible: 'section.panel:has(.avbig)', titre: 'Le suivi du chantier', texte: 'Touchez 25 %, 50 %… pour dire où en sont les travaux. Plus bas : l’argent du chantier, les achats et les photos.', ok: ['Suivant'] },
   { page: pChantier, besoin: 'chantier', cible: '[data-fac="acompte"]', titre: 'Demandez l’acompte', texte: 'Avant de commencer, on demande un acompte. Appuyez sur « Facture d’acompte » : Kadra la calcule d’après le devis.',
     fini: () => { const id = docIci(); if (id && id !== VIS.devis) VIS.facture = id; return !!VIS.facture; } },
-  { page: pFacture, besoin: 'facture', cible: '#send', titre: 'La facture d’acompte', texte: 'D’habitude, « Émettre et envoyer » lui donne son numéro définitif et l’envoie au client ; ensuite, elle ne se modifie plus. Pour l’exemple, on passe directement au paiement.', ok: ['Suivant'] },
-  { page: pFacture, besoin: 'facture', cible: 'section.panel:has(#pf)', titre: 'Le client a payé', texte: 'Il vous a fait un virement ? Enregistrez-le ici avec « Enregistrer le règlement » : le montant, la date et le mode sont déjà remplis.',
+  { page: pFacture, besoin: 'facture', cible: 'section.panel:has(#pf)', titre: 'Le client a payé', texte: 'D’habitude, « Émettre et envoyer » donne à la facture son numéro et l’envoie. Ici, passons au virement du client : « Enregistrer le règlement », tout est déjà rempli.',
     fini: async () => (await visDocVu(VIS.facture))?.regle > 0 },
-  { centre: true, titre: 'Les relances, c’est Kadra', texte: 'Un devis sans réponse, une facture pas payée à l’échéance : Kadra relance le client tout seul par e-mail, et vous tient au courant. C’est réglable dans Paramètres, « Automatismes ».', ok: ['Suivant'] },
-  { page: '#/mails', titre: 'Vos e-mails', texte: 'Branchez votre boîte mail (Paramètres, « Automatismes ») : les e-mails de vos clients arrivent ici, rangés par client. Pour répondre, dites ce que vous voulez dire : Kadra écrit la réponse.', ok: ['Suivant'] },
-  { page: '#/agenda', titre: 'Votre agenda', texte: 'Un client écrit « jeudi 10 h, ça vous va ? » : Kadra le repère dans l’e-mail et vous propose le rendez-vous. Vous n’avez qu’à confirmer.', ok: ['Suivant'] },
-  { page: '#/', cible: '#voix, .tabbar .fab', titre: 'Parlez à Kadra', texte: 'Le plus simple : appuyez ici et parlez. « Mets-moi un rendez-vous jeudi à 9 h chez Madame Exemple », « Qui me doit de l’argent ? ». Essayez !', ok: ['Suivant'], fini: () => document.body.classList.contains('reflechit') },
-  { page: '#/', centre: true, fin: true, titre: 'Vous savez tout', texte: 'L’accueil vous dit chaque jour ce qui compte : qui doit vous payer, ce qu’il reste à facturer, vos rendez-vous. Les autres pages s’expliquent la première fois que vous les ouvrez. On efface le chantier d’exemple ?',
-    ok: ['Effacer l’exemple', () => visEffacer()], non: 'Le garder' },
+  ...['factures', 'chantiers', 'clients', 'mails', 'agenda', 'depenses', 'notes', 'analyse', 'catalogue'].map(rubrique),
+  { page: '#/', cible: '#voix, .tabbar .fab', titre: 'Parlez à Kadra', texte: 'Le plus simple : appuyez ici et parlez. « Qui me doit de l’argent ? », « Mets-moi un rendez-vous jeudi à 9 h chez Madame Lambert ». Essayez !', ok: ['Suivant'], fini: () => document.body.classList.contains('reflechit') },
+  { centre: true, fin: true, titre: 'À vous de jouer', texte: 'C’était l’entreprise d’exemple. On passe à la vôtre : elle est vide et prête, rien de ce que vous venez d’essayer n’y est. Les pages s’expliquent la première fois que vous les ouvrez.', ok: ['Passer à mon compte', () => visSortir()] },
+  { page: '#/parametres', cible: '#tab > :first-child', titre: 'Votre entreprise', texte: 'Votre nom, votre adresse et votre logo s’impriment sur chaque devis et chaque facture (le SIRET et l’IBAN juste en dessous). Remplissez ce que vous avez sous la main : c’est enregistré tout seul.',
+    ok: ['C’est fait', () => visFin('À vous de jouer : dictez votre premier devis !')] },
 ];
+const FIN = ETAPES.findIndex(et => et.fin);
 const visPage = et => (typeof et.page === 'function' ? et.page() : et.page);
 const cibleEl = sel => [...document.querySelectorAll(sel)].find(e => { const r = e.getBoundingClientRect(); return r.width && r.height; });
 
@@ -2892,15 +2929,34 @@ async function visiteDemarrer(force) {
   VIS = visLire();
   if (force) VIS = { e: 0, vus: VIS?.vus || [] };
   else if (!VIS) {
-    if ((await api('documents').catch(() => [0])).length) return; // compte déjà utilisé : ni visite ni bulles d'aide
+    if (ME.presentation || (await api('documents').catch(() => [0])).length) return; // compte déjà utilisé : ni visite ni bulles d'aide
     VIS = { e: 0, vus: [] };
   }
   if (VIS.e < 0) return;
-  VIS.avant ??= (await api('clients').catch(() => [])).map(c => c.id); // ses vrais clients ne seront jamais effacés avec l'exemple
+  if (!ME.presentation && VIS.e > 0 && VIS.e <= FIN) VIS.e = FIN + 1; // exemple déjà effacé (autre appareil) : reste « Votre entreprise »
   visGarder();
   await introFinie;
   clearInterval(visTimer); visTimer = setInterval(visTick, 400); visCle = '';
-  visAller(); visPlacer();
+  bandeauExemple(); visAller(); visPlacer();
+}
+async function visEntrer() { // l'exemple remplace son compte le temps de la visite ; la page repart dessus
+  await api('presentation', 'POST');
+  VIS = { e: 1, vus: VIS.vus }; visGarder();
+  location.hash = '#/'; location.reload();
+}
+async function visSortir() {
+  await api('presentation', 'DELETE');
+  VIS = { e: FIN + 1, vus: VIS?.vus || [] }; visGarder();
+  location.hash = '#/parametres'; location.reload();
+}
+// Bandeau tant que l'artisan regarde l'exemple hors de la visite (visite quittée, autre appareil) : jamais coincé dans le compte d'exemple
+function bandeauExemple() {
+  $('#bac')?.remove();
+  if (!ME?.presentation || visiteEn()) return;
+  const b = document.createElement('div'); b.id = 'bac';
+  b.innerHTML = '<span>Vous regardez l’entreprise d’exemple</span><button class="btn primary sm">Revenir à mon compte</button>';
+  b.querySelector('button').onclick = e => busy(e.currentTarget, visSortir);
+  document.body.append(b);
 }
 function visAller() { // à l'arrivée sur une étape : on ouvre sa page
   const p = visPage(ETAPES[VIS.e]);
@@ -2916,25 +2972,15 @@ function visFin(msg) {
   VIS.e = -1; visGarder(); clearInterval(visTimer);
   $('#vt')?.remove(); $('#vt-spot')?.remove();
   if (msg) toast(msg);
-}
-async function visEffacer() { // seulement ce qui vient de la visite : devis et factures marqués « exemple », son chantier, son client s'il est nouveau
-  const d = VIS.devis && await api('documents/' + VIS.devis).catch(() => null);
-  if (d?.data.exemple) {
-    for (const f of await api('documents?parent_id=' + d.id)) if (f.data.exemple && !f.numero) await api('documents/' + f.id, 'DELETE');
-    await api('documents/' + d.id, 'DELETE');
-    if (d.chantier_id) await api('chantiers/' + d.chantier_id, 'DELETE').catch(() => {});
-    if (d.client_id && !VIS.avant.includes(d.client_id) && !(await api('documents?client_id=' + d.client_id)).length) await api('clients/' + d.client_id, 'DELETE');
-  }
-  visFin('Exemple effacé. À vous de jouer !');
-  if (ou() === '#/') route(); else location.hash = '#/';
+  bandeauExemple();
 }
 async function visAction(a) {
   const et = ETAPES[VIS.e];
   if (a === 'ok') { if (et.ok[1]) await et.ok[1](); else visSuite(); }
-  else if (a === 'non') visFin(et.fin ? 'L’exemple reste dans vos devis.' : 'Vous pourrez lancer la visite plus tard : Paramètres, Mon compte.');
+  else if (a === 'non') visFin('Vous pourrez lancer la visite plus tard : Paramètres, Mon compte.');
   else if (a === 'passer') visSuite();
   else if (a === 'aller') location.hash = visPage(et);
-  else if (a === 'quitter') { if (VIS.devis && !et.fin) { VIS.e = ETAPES.length - 1; visAller(); visPlacer(); } else visFin('Vous pourrez revoir la visite : Paramètres, Mon compte.'); }
+  else if (a === 'quitter') { if (ME.presentation && VIS.e < FIN) { VIS.e = FIN; visAller(); visPlacer(); } else visFin('Vous pourrez revoir la visite : Paramètres, Mon compte.'); }
 }
 async function visTick() {
   if (!visiteEn() || !ME) { clearInterval(visTimer); $('#vt')?.remove(); $('#vt-spot')?.remove(); return; } // déconnecté : la visite reprendra à la connexion
@@ -2963,9 +3009,9 @@ function visPlacer() {
   if (k !== visCle) {
     visCle = k;
     b.innerHTML = `<div class="vt-h"><span>${VIS.e ? `Étape ${VIS.e} sur ${n}` : 'Visite guidée'}</span>${et.non ? '' : `<button data-v="quitter" aria-label="Quitter la visite" title="Quitter la visite">${icon('x', 16)}</button>`}</div>
-${VIS.e ? `<i class="vt-p"><b style="width:${(100 * VIS.e) / n}%"></b></i>` : ''}<h3>${et.titre}</h3><p>${ici ? et.texte : 'Cette étape se passe sur une autre page.'}</p>
+${VIS.e ? `<i class="vt-p"><b style="width:${(100 * VIS.e) / n}%"></b></i>` : ''}<h3>${et.aide ? AIDES[et.aide][0] : et.titre}</h3><p>${!ici ? 'Cette étape se passe sur une autre page.' : et.aide ? AIDES[et.aide][1] : et.texte}</p>
 <div class="vt-a">${!ici ? '<button class="btn primary" data-v="aller">Revenir à l’étape</button>'
-    : `${et.ok ? `<button class="btn primary" data-v="ok">${et.ok[0]}</button>` : '<span class="vt-att">À vous de jouer</span>'}${et.non ? `<button class="btn ghost" data-v="non">${et.non}</button>` : '<button class="vt-passer" data-v="passer">Passer</button>'}`}</div>`;
+    : `${et.ok ? `<button class="btn primary" data-v="ok">${et.ok[0]}</button>` : '<span class="vt-att">À vous de jouer</span>'}${et.non ? `<button class="btn ghost" data-v="non">${et.non}</button>` : et.fin ? '' : '<button class="vt-passer" data-v="passer">Passer</button>'}`}</div>`;
     b.classList.toggle('centre', !!et.centre);
   }
   const cache = !!document.querySelector('dialog[open]') || document.body.classList.contains('intro'); // une fenêtre ouverte a ses propres explications
@@ -3128,7 +3174,40 @@ function aidePage(r) {
   view.prepend(a);
 }
 
+// ---------- Abonnement à Kadra (formules : PLANS dans server.js) ----------
+async function abonnement() {
+  const sess = new URLSearchParams(location.hash.split('?')[1] || '').get('session'); // retour du paiement Stripe
+  if (sess) {
+    history.replaceState(null, '', '#/abonnement');
+    try { await api('abonnement/retour', 'POST', { session: sess }); toast('Merci ! Votre abonnement est actif'); } catch (e) { toast(e.message); }
+  }
+  const [a, { plans, comparer }] = await Promise.all([api('abonnement'), api('plans')]);
+  const actif = a.statut === 'actif', jours = Math.ceil((Date.parse(a.essai_fin) - Date.now()) / 864e5), mien = plans.find(p => p.id === a.plan);
+  let periode = a.periode || 'an';
+  head('Mon abonnement', actif ? `Formule ${mien?.nom || ''} active, payée ${a.periode === 'an' ? 'à l’année' : 'au mois'}` : a.statut === 'impaye' ? 'Dernier paiement refusé : mettez votre carte à jour' : a.statut === 'resilie' ? 'Abonnement résilié' : jours > 0 ? `Essai gratuit : encore ${plural(jours, 'jour')}` : 'Votre essai gratuit est terminé',
+    a.gerer ? `<button class="btn" id="gerer">${icon('receipt', 16)}Carte, factures, résiliation</button>` : '');
+  const cell = v => v === 1 ? `<span class="oui">${icon('check', 16)}</span>` : v === 0 ? '<span class="muted">—</span>' : h(v);
+  const dessiner = () => {
+    const an = periode === 'an';
+    view.innerHTML = `<div class="seg periode" role="group" aria-label="Période"><button data-p="mois" class="${an ? '' : 'on'}">Au mois</button><button data-p="an" class="${an ? 'on' : ''}">À l’année <em>−20 %</em></button></div>
+<div class="offres">${plans.map(p => `<section class="panel offre${p.conseille ? ' conseil' : ''}">${p.conseille ? '<em class="pill plan">Le plus choisi</em>' : ''}
+<h2>${h(p.nom)}</h2><p class="muted">${h(p.pour)}</p><div class="prix"><b>${an ? p.annuel : p.prix} €</b><span>HT / mois</span><small>${an ? `soit ${p.annuel * 12} € HT payés une fois par an` : 'sans engagement'}</small></div>
+${p.base ? `<p class="base">${h(p.base)}</p>` : ''}<ul>${p.points.map(x => `<li>${icon('check', 15)}${h(x)}</li>`).join('')}</ul>
+${actif && a.plan === p.id && a.periode === periode ? '<button class="btn" disabled>Votre formule</button>' : `<button class="btn ${p.conseille ? 'primary' : ''}" data-plan="${p.id}">${actif ? 'Passer à' : 'Choisir'} ${h(p.nom)}</button>`}</section>`).join('')}</div>
+<section class="panel cmp"><div class="ph"><h2>Comparer les formules</h2></div><div class="tw"><table class="list"><thead><tr><th></th>${plans.map(p => `<th>${h(p.nom)}</th>`).join('')}</tr></thead><tbody>${comparer.map(([l, ...v]) => `<tr><td>${h(l)}</td>${v.map(x => `<td>${cell(x)}</td>`).join('')}</tr>`).join('')}</tbody></table></div></section>
+<p class="muted offre-pied">Au mois : sans engagement. À l’année : 20 % moins cher, payé en une fois. Changement de formule à tout moment, au prorata. ${jours > 0 && !actif ? 'Les jours d’essai qui restent ne sont pas facturés. ' : ''}${a.paiement ? 'Paiement sécurisé par Stripe.' : 'Le paiement en ligne de l’abonnement ouvre bientôt.'} <a href="/legal.html#cgv" target="_blank" rel="noopener">Conditions de vente</a></p>`;
+    view.querySelectorAll('[data-p]').forEach(b => { b.onclick = () => { periode = b.dataset.p; dessiner(); }; });
+    view.querySelectorAll('[data-plan]').forEach(b => { b.onclick = () => busy(b, async () => {
+      const r = await api('abonnement', 'POST', { plan: b.dataset.plan, periode });
+      if (r.change) { toast('Formule changée'); route(); } else location.href = r.url;
+    }); });
+  };
+  dessiner();
+  if ($('#gerer')) $('#gerer').onclick = e => busy(e.currentTarget, async () => { location.href = (await api('abonnement/gerer', 'POST')).url; });
+}
+
 const ROUTES = {
+  abonnement,
   '': dashboard, analyse, nouveau, doc: editDoc, import: pageImport, client, chantiers, chantier, templates, template: editTemplate, parametres, kadra: kadraAdmin, catalogue, agenda, mails, depenses, notes,
   devis: () => liste('devis'), factures: () => liste('facture', location.hash.includes('?retard') ? 'retard' : 'tous'), modeles: () => liste('modele'),
   clients: () => clients(location.hash.split('?')[1]),
@@ -3144,7 +3223,7 @@ async function route() {
   if (r) badges(); // l'accueil les met à jour avec ses propres chiffres
   try { await (ROUTES[r] || dashboard)(id); } catch (e) { if (ME) view.innerHTML = `<div class="empty">${icon('alert', 28)}<p>${h(e.message)}</p><a class="btn" href="#/">Retour au tableau de bord</a></div>`; }
   view.querySelectorAll('.kpi .v, .chcard .pc strong').forEach(el => compter(el)); // les chiffres défilent jusqu'à leur valeur
-  aidePage(r);
+  aidePage(r); bandeauExemple();
   scrollTo(0, 0);
 }
 addEventListener('hashchange', route);
@@ -3152,13 +3231,15 @@ addEventListener('hashchange', route);
 async function boot() {
   langueAppli();
   if (location.hash.startsWith('#/reset/')) return login('reset'); // lien « mot de passe oublié » reçu par e-mail
-  try { ME = await api('me'); } catch { return login(); }
+  try { ME = await api('me'); } catch { return login(location.hash === '#inscription' ? 'signup' : 'login'); } // « Essayer gratuitement » de la page Tarifs
   S = await api('settings');
   teinte(); ouverture();
   VIS = visLire(); // avant la 1re page : son aide peut s'afficher
   shell(); route(); envoyerAttente();
   if (navigator.onLine) setTimeout(() => ['dashboard', 'documents', 'clients', 'chantiers', 'notes', 'rdv', 'catalog', 'depenses', 'templates'].forEach(k => api(k).catch(() => {})), 4000);
   if (!ME.user.langue) await choisirLangue(true);
+  let vu = true; try { vu = localStorage.getItem('kadra_boite_' + ME.user.id) === '1'; localStorage.setItem('kadra_boite_' + ME.user.id, '1'); } catch {}
+  if (!vu && !S.imap_host && ME.user.role === 'admin') await brancherBoite(true); // proposé une seule fois
   visiteDemarrer();
 }
 boot();
