@@ -2,7 +2,7 @@
 // Sans dépendance : un .xlsx est un zip de XML.
 import zlib from 'node:zlib';
 
-function unzip(buf) {
+export function unzip(buf) {
   let e = buf.length - 22;
   while (e >= 0 && buf.readUInt32LE(e) !== 0x06054b50) e--;
   if (e < 0) throw Object.assign(new Error('Fichier Excel illisible : enregistrez-le au format .xlsx.'), { status: 400 });
@@ -45,10 +45,22 @@ function couleur(tag, theme) {
   return '#' + hex;
 }
 
-export function xlsxToHtml(buf) {
+// Nombre de feuilles d'un classeur (un devis peut tenir sur plusieurs feuilles : « Table 1 », « Table 2 »…).
+export const nbFeuilles = buf => all(unzip(buf)('xl/workbook.xml'), 'sheet').length;
+// Toutes les feuilles à la suite dans une seule page (feuilles vides sautées) : un devis découpé en pages Excel est lu en entier.
+export function classeurHtml(buf) {
+  const pages = Array.from({ length: nbFeuilles(buf) }, (_, i) => { try { return xlsxToHtml(buf, i); } catch { return ''; } }).filter(Boolean);
+  if (!pages.length) return xlsxToHtml(buf); // aucune feuille lisible : même message d'erreur qu'avant
+  const pris = (re, h) => (re.exec(h) || [])[1] || '';
+  return pages[0].replace(/<style>[\s\S]*?<\/style>/, `<style>${pages.map(h => pris(/<style>([\s\S]*?)<\/style>/, h)).join('\n')}</style>`)
+    .replace(/<body>[\s\S]*<\/body>/, `<body>${pages.map(h => pris(/<body>([\s\S]*)<\/body>/, h)).join('<br>\n')}</body>`);
+}
+
+// `feuille` = numéro de la feuille (0 = la 1re) ; sans lui, la feuille ouverte dans Excel.
+export function xlsxToHtml(buf, feuille) {
   const read = unzip(buf);
   const wb = read('xl/workbook.xml'), rels = read('xl/_rels/workbook.xml.rels');
-  const sheets = all(wb, 'sheet'), active = sheets[+(attr(all(wb, 'workbookView')[0] || '', 'activeTab') || 0)] || sheets[0];
+  const sheets = all(wb, 'sheet'), active = sheets[feuille ?? +(attr(all(wb, 'workbookView')[0] || '', 'activeTab') || 0)] || sheets[0];
   if (!active) throw Object.assign(new Error('Aucune feuille dans ce fichier Excel.'), { status: 400 });
   const target = attr(all(rels, 'Relationship').find(r => attr(r, 'Id') === attr(active, 'r:id')) || '', 'Target') || 'worksheets/sheet1.xml';
   const sheetPath = target.startsWith('/') ? target.slice(1) : 'xl/' + target;

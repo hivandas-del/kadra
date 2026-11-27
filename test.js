@@ -56,6 +56,8 @@ for (const [doc, s] of [
   [{ numero: 'FAC-1', date: '2026-10-30', data: devis.data }, { nom: 'X', siret: '12345678900012' }],
   [{ numero: 'FAC-2', date: '2026-10-30', data: solde.data }, { nom: 'X' }],
   [{ numero: 'FAC-3', date: '2026-10-30', data: devis.data }, { nom: 'X', franchise_tva: true }],
+  // lignes sans prix + total HT tapé (1 000 € dont 200 € de ligne chiffrée) : le prix global devient une ligne du Factur-X
+  [{ numero: 'FAC-4', date: '2026-10-30', data: { remise_pct: 5, forfait_ht: 800, lignes: [{ type: 'ligne', designation: 'Dépose', qte: 1, pu: null, tva: 10 }, { type: 'ligne', designation: 'Faïence', qte: 18, pu: '', tva: 10 }, { type: 'ligne', designation: 'Évacuation', qte: 1, pu: 200, tva: 10 }, { type: 'ligne', designation: 'Peinture', qte: 10, pu: null, montant: 150, tva: 20 }] } }, { nom: 'X' }],
   [{ numero: 'AV-1', kind: 'avoir', parent_numero: 'FAC-1', date: '2026-10-30', data: { ...devis.data, lignes: devis.data.lignes.map(l => ({ ...l, pu: -l.pu || 0 })) } }, { nom: 'X' }],
 ]) {
   const x = ciiXml(doc, s);
@@ -68,6 +70,21 @@ for (const [doc, s] of [
   assert.ok(tag(x, 'ChargeAmount').every(v => v >= 0));                                     // BR-27 : prix net jamais négatif
   assert.ok(tag(x, 'GrandTotalAmount')[0] >= 0);                                             // avoir : montants positifs, type 381
 }
+{
+  const d = { forfait_ht: 800, lignes: [{ type: 'ligne', qte: 1, pu: null, tva: 10 }, { type: 'ligne', qte: 1, pu: 200, tva: 10 }] };
+  assert.equal(totaux(d).brut, 1000);
+  assert.equal(totaux({ ...d, lignes: [d.lignes[1]] }).brut, 200); // plus aucune ligne sans prix : le prix global ne compte plus
+  assert.equal(totaux({ ...d, lignes: [...d.lignes, { type: 'ligne', qte: 10, pu: null, montant: 150, tva: 10 }] }).brut, 1150); // montant tapé sans prix unitaire
+}
+{
+  const html = renderDoc({ type: 'devis', template_id: 3, data: { lignes: [{ type: 'ligne', designation: 'A', qte: 10, pu: null, montant: 150, tva: 10 }] } }, { retouches: { 3: { align: { total: 'center', x: 'red' }, img: { logo: { x: 12, y: '-4</style>' } } } } }, BUILTINS[0].html);
+  assert.ok(html.includes('.c-total{text-align:center!important}') && html.includes('img.logo{transform:translate(12px,0px)}') && !html.includes('.c-x') && html.includes('150,00'));
+}
+{ // lignes laissées vides : absentes du document envoyé (une seule ligne affichée), le prix global compte toujours
+  const html = renderDoc({ type: 'devis', data: { forfait_ht: 500, lignes: [{ type: 'ligne', designation: 'Peinture', qte: 1, pu: null, tva: 10 }, ...Array(5).fill({ type: 'ligne', designation: ' ', qte: 1, pu: null, tva: 10 })] } }, {}, BUILTINS[0].html);
+  assert.equal(html.match(/<tbody>([\s\S]*?)<\/tbody>/)[1].match(/<tr>/g).length, 1);
+  assert.ok(html.includes('550,00'));
+}
 console.log('OK : Factur-X cohérent');
 
 // Aperçu en direct : JSON coupé à n'importe quel endroit → objet lisible, et le JSON complet → identique.
@@ -79,6 +96,17 @@ assert.deepEqual(partialJSON('{"objet": "Trav'), { objet: 'Trav' });
 assert.deepEqual(partialJSON('{"objet":"x","lig'), { objet: 'x' });
 assert.equal(partialJSON('{"lignes":[{"designation":"A","pu": 4').lignes[0].pu, 4);
 console.log('OK : aperçu en direct');
+
+// Particulier : rétractation + formulaire + médiateur sur le devis ; pro (SIRET ou société) : rien de tout ça
+import { docContext, particulier } from './templates.js';
+assert.ok(particulier({ nom: 'Mme Claire Martin' }) && !particulier({ nom: 'SCI Caprinox' }) && !particulier({ nom: 'Le Fournil', siret: '12345678901234' }));
+const sM = { nom: 'Yildiz', mediateur: 'CM2C (www.cm2c.net)' }, mDe = doc => docContext(doc, sM).mentions;
+assert.match(mDe(SAMPLE), /L221-18[\s\S]*Formulaire de rétractation[\s\S]*/);
+assert.match(mDe(SAMPLE), /CM2C/);
+assert.doesNotMatch(mDe({ ...SAMPLE, data: { ...SAMPLE.data, client: { nom: 'SARL Dupont' } } }), /rétractation|CM2C/);
+assert.match(mDe({ ...SAMPLE, type: 'facture', data: { ...SAMPLE.data, paiement_des: '2026-12-03' } }), /à partir du 03\/12\/2026/);
+assert.doesNotMatch(mDe({ ...SAMPLE, type: 'facture' }), /rétractation/);
+console.log('OK : mentions pour les particuliers');
 
 // Excel → grille HTML : zip minimal écrit ici (deflate), texte partagé, fusion, couleur de fond, pourcentage.
 import zlib from 'node:zlib';
@@ -106,7 +134,26 @@ const grille = xlsxToHtml(zip({
 assert.match(grille, /<td class="x1" colspan="3">DEVIS &amp; FACTURE<\/td>/);
 assert.match(grille, /\.x1\{font-weight:700;color:#C83C1E;background:#FBE9E5\}/);
 assert.match(grille, />30 %</);
+// Classeur de plusieurs feuilles (devis découpé en « Table 1 », « Table 2 »…) : toutes lues, pas seulement celle ouverte dans Excel
+import { classeurHtml } from './xlsx.js';
+const feuille = t => `<worksheet><sheetData><row r="1"><c r="A1" t="inlineStr"><is><t>${t}</t></is></c></row></sheetData></worksheet>`;
+const deux = classeurHtml(zip({
+  'xl/workbook.xml': '<workbook><bookViews><workbookView activeTab="1"/></bookViews><sheets><sheet name="Table 1" r:id="rId1"/><sheet name="Table 2" r:id="rId2"/></sheets></workbook>',
+  'xl/_rels/workbook.xml.rels': '<Relationships><Relationship Id="rId1" Target="worksheets/sheet1.xml"/><Relationship Id="rId2" Target="worksheets/sheet2.xml"/></Relationships>',
+  'xl/styles.xml': '<styleSheet/>', 'xl/worksheets/sheet1.xml': feuille('LOT 1'), 'xl/worksheets/sheet2.xml': feuille('LOT 8'),
+}));
+assert.match(deux, /LOT 1[\s\S]*LOT 8/);
 console.log('OK : import Excel');
+
+// « totalsection » : total du lot sur sa ligne de titre ; « 1. TITRE » marqué niv1, « 1.1. … » non
+const lotTpl = '<meta name="kadra-colonnes" content="designation=Prestation;qte=Qté;pu=Montant unit;total=Montant ht;totalsection">{{{lignes}}}';
+const lots = renderDoc({ type: 'devis', data: { client: {}, lignes: [{ type: 'section', designation: 'LOT 1' }, { designation: '1. PRÉPARATION', qte: 1, pu: null, tva: 10 },
+  { designation: '1.1. Protections', qte: 1, pu: 400, tva: 10 }, { designation: 'Chape', qte: 19, pu: 95, montant: null, tva: 10 }, { type: 'section', designation: 'LOT 2' }] } }, {}, lotTpl);
+assert.match(lots, /LOT 1<\/td><td class="c-qte n"><\/td><td class="c-pu n"><\/td><td class="c-total n">2\s205,00\s€<\/td>/);
+assert.match(lots, /LOT 2<\/td><td class="c-qte n"><\/td><td class="c-pu n"><\/td><td class="c-total n"><\/td>/);
+assert.match(lots, /<tr class="niv1"><td class="c-designation">1\. PRÉPARATION/);
+assert.doesNotMatch(lots, /class="niv1"><td class="c-designation">1\.1\./);
+console.log('OK : total des lots');
 
 // Images d'un PDF (logo, cachet) : une PNG transparente mise dans un PDF ressort en PNG avec sa transparence.
 {
@@ -120,6 +167,17 @@ console.log('OK : import Excel');
   assert.equal(img.data[25], 6);                 // RVB + transparence
   assert.equal(zlib.inflateSync(img.data.subarray(41, img.data.length - 16)).length, 5); // 1 ligne : filtre + RVBA
   console.log('OK : images d’un PDF');
+}
+// Texte d'un PDF (import lu en texte) : deux colonnes un peu décalées en hauteur restent sur la même ligne, chacune à sa place.
+{
+  const { PDFDocument, StandardFonts } = await import('pdf-lib'), { pdfTexte } = await import('./pdf.js');
+  const pdf = await PDFDocument.create(), page = pdf.addPage(), font = await pdf.embedFont(StandardFonts.Helvetica);
+  const t = (s, x, y) => page.drawText(s, { x, y, size: 9, font });
+  t('Sci YMM', 50, 700); t('Adresse chantier : 38 avenue', 200, 701); t('73 rue Jean', 50, 687); t('77420 CHAMPS', 200, 691); t('91330 Yerres', 50, 674);
+  const l = (await pdfTexte(Buffer.from(await pdf.save()))).split('\n');
+  assert.equal(l.length, 3, l.join('\n'));
+  assert.ok(/^73 rue Jean +77420 CHAMPS$/.test(l[1]) && l[1].indexOf('77420') === l[0].indexOf('Adresse'), l.join('\n'));
+  console.log('OK : texte d’un PDF');
 }
 
 // Écritures comptables (FEC) : chaque écriture équilibrée, avoir à l'envers, franchise sans TVA.
@@ -157,3 +215,19 @@ console.log('OK : écritures comptables');
   assert.equal(tr('8 420,00 €'), '8 420,00 €');
 }
 console.log('Langue de l’interface : OK');
+
+// Export Word / Excel : vrais fichiers lisibles, avec la mise en page du document (rendu par Chrome comme le PDF)
+{
+  const { docWord, docExcel } = await import('./office.js');
+  const { docxTexte, xlsxToHtml, unzip } = await import('./xlsx.js');
+  const s = { nom: 'Yildiz & Fils', adresse: '1 rue A\n69000 Lyon', couleur: '#1e3a8a' };
+  const html = renderDoc(SAMPLE, s, BUILTINS.find(b => b.nom === 'Moderne').html), tt = totaux(SAMPLE.data);
+  const txt = docxTexte(await docWord(html));
+  assert.ok(txt.includes('Yildiz & Fils') && txt.includes('Mme Claire Martin') && txt.includes(SAMPLE.data.lignes[1].designation), 'texte du Word');
+  const xl = await docExcel(html), grille = xlsxToHtml(xl);
+  assert.ok(grille.includes('Mme Claire Martin') && grille.includes('Total TTC'), 'Excel lisible');
+  assert.ok(/background:#1E3A8A/i.test(grille), 'bandeau de couleur du modèle repris dans Excel');
+  assert.ok(unzip(xl)('xl/worksheets/sheet1.xml').includes(`<v>${tt.ttc}</v>`), 'total TTC en nombre dans Excel');
+}
+console.log('Export Word / Excel : OK');
+process.exit(0); // Chrome (export Word / Excel) reste ouvert sinon

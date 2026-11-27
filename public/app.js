@@ -1,5 +1,5 @@
-import { totaux, eur, r2, CATEGORIES } from './calc.js';
-import { renderDoc, renderEdit, docContext } from '/templates.js';
+import { totaux, eur, r2, CATEGORIES, sansPrix, montant } from './calc.js';
+import { renderDoc, renderEdit, docContext, retouches, retouchesDe } from '/templates.js';
 import { traducteur, observer } from './i18n.js';
 
 // ---------- Outils ----------
@@ -116,6 +116,7 @@ const IC = {
   printer: '<path d="M6.5 9V2.5h11V9M6.5 18h-2a2 2 0 0 1-2-2v-5a2 2 0 0 1 2-2h15a2 2 0 0 1 2 2v5a2 2 0 0 1-2 2h-2"/><rect x="6.5" y="14" width="11" height="7.5"/>',
   link: '<path d="M10 13.5a5 5 0 0 0 7.5.5l3-3a5 5 0 0 0-7-7l-1.7 1.7"/><path d="M14 10.5a5 5 0 0 0-7.5-.5l-3 3a5 5 0 0 0 7 7l1.7-1.7"/>',
   trash: '<path d="M3.5 6h17M9 6V3.5h6V6M18.5 6l-1 15h-11l-1-15M10 10.5v6M14 10.5v6"/>',
+  pencil: '<path d="M16.5 3.5a2.1 2.1 0 0 1 3 3L7 19l-4 1 1-4z"/><path d="m14.5 5.5 3 3"/>',
   logout: '<path d="M9 21H5a2 2 0 0 1-2-2V5a2 2 0 0 1 2-2h4M16 17l5-5-5-5M21 12H9"/>',
   check: '<path d="M20 6 9 17l-5-5"/>',
   arrowR: '<path d="M5 12h14M13 6l6 6-6 6"/>',
@@ -126,6 +127,7 @@ const IC = {
   star: '<path d="m12 2.8 2.8 6 6.5.7-4.9 4.4 1.4 6.4L12 17l-5.8 3.3 1.4-6.4-4.9-4.4 6.5-.7z"/>',
   card: '<rect x="2.5" y="5" width="19" height="14" rx="2"/><path d="M2.5 10h19M6.5 15h3"/>',
   undo: '<path d="M9 14.5 4 9.5l5-5"/><path d="M4 9.5h11a5.5 5.5 0 0 1 0 11h-3"/>',
+  redo: '<path d="m15 14.5 5-5-5-5"/><path d="M20 9.5H9a5.5 5.5 0 0 0 0 11h3"/>',
   sparkle: '<path d="M12 3l1.9 5.1L19 10l-5.1 1.9L12 17l-1.9-5.1L5 10l5.1-1.9zM19 16l.8 2.2L22 19l-2.2.8L19 22l-.8-2.2L16 19l2.2-.8z"/>',
   x: '<path d="M18 6 6 18M6 6l12 12"/>',
   more: '<path d="M5 12h.01M12 12h.01M19 12h.01" stroke-width="3"/>',
@@ -152,7 +154,9 @@ const IC = {
 const icon = (n, s = 18) => `<svg class="i" viewBox="0 0 24 24" width="${s}" height="${s}" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true">${IC[n]}</svg>`;
 const LOGO = '<svg viewBox="0 0 32 32" aria-hidden="true"><rect width="32" height="32" rx="8" fill="#14213D"/><path d="M15.5 16l7.5 8.5" stroke="#A9C1FF" stroke-width="3.25" stroke-linecap="round"/><path d="M14 7.5H9.5v17H14M23 7.5L15.5 16" fill="none" stroke="#fff" stroke-width="3.25" stroke-linecap="round" stroke-linejoin="round"/></svg>'; // même dessin que /logo.svg
 const initials = n => (String(n || '').replace(/^(m\.|mme|mlle|m|mr|madame|monsieur)\s+/i, '').split(/\s+/).filter(Boolean).slice(0, 2).map(w => w[0]).join('') || '?').toUpperCase();
-const avatar = (n, cls = '') => `<span class="av ${cls}" aria-hidden="true">${h(initials(n))}</span>`;
+// Chaque client garde la même teinte partout (tirée de son nom) : on le reconnaît avant de lire
+const teinteDe = n => { let x = 0; for (const c of String(n || '').toLowerCase()) x = (x * 31 + c.charCodeAt(0)) % 6; return 't' + x; };
+const avatar = (n, cls = '') => `<span class="av ${n ? teinteDe(initials(n) + n) : ''} ${cls}" aria-hidden="true">${h(initials(n))}</span>`;
 
 // ---------- Fenêtres (remplacent alert/confirm/prompt) ----------
 const field = ({ name, label, type = 'text', value = '', required, options, rows, hint, step, placeholder, cls = '' }) => `<label class="f ${type === 'checkbox' ? 'check' : ''} ${cls}">${type === 'checkbox' ? `<input type="checkbox" name="${name}" ${value ? 'checked' : ''}><span>${label}</span>` : `<span>${label}</span>`}${
@@ -192,14 +196,79 @@ function pill(d) {
   return { brouillon: P('Brouillon'), envoye: P('Envoyé', 'plan', 'send'), accepte: P('Accepté', 'good', 'check'), refuse: P('Refusé', 'crit', 'x') }[d.statut] || '';
 }
 const kindLabel = d => (d.type === 'modele' ? 'Devis type' : d.type === 'devis' ? 'Devis' : d.kind === 'avoir' ? 'Avoir' : d.kind === 'acompte' ? 'Facture d’acompte' : d.kind === 'situation' ? 'Situation de travaux' : 'Facture');
-const docTable = (list, empty = 'Rien pour le moment.') => list.length ? `<table class="list docs"><thead><tr><th>Document</th><th>Client</th><th class="hide-m">Objet</th><th class="hide-m">Date</th><th class="n">Total TTC</th><th>Statut</th></tr></thead><tbody>
+// tri = { k, dir } : titres de colonnes cliquables (listes Devis / Factures)
+// cli = clients cochés dans le filtre du titre « Client » (null = tous)
+const docTable = (list, empty = 'Rien pour le moment.', tri, cli) => {
+  const th = (k, l, c = '') => k === 'client' && tri ? `<th><button class="tri${cli ? ' on' : ''}" data-fcli aria-haspopup="true">Client${cli ? ` (${cli.length})` : ''} ▾</button></th>`
+    : `<th class="${c}"${tri && tri.k === k ? ` aria-sort="${tri.dir > 0 ? 'ascending' : 'descending'}"` : ''}>${tri ? `<button class="tri${tri.k === k ? ' on' : ''}" data-tri="${k}">${l}${tri.k === k ? (tri.dir > 0 ? ' ↑' : ' ↓') : ''}</button>` : l}</th>`;
+  const fac = list.some(d => d.type === 'facture'); // factures : colonne « Payée par » (mode du dernier règlement)
+  const paie = d => d.mode_paie ? `<span class="mpaie">${icon({ Carte: 'card', Virement: 'building', Chèque: 'pencil', Espèces: 'euro' }[d.mode_paie] || 'euro', 14)}${h(d.mode_paie)}</span>` : '<span class="muted">–</span>';
+  return list.length ? `<table class="list docs"><thead><tr>${th('num', 'Document')}${th('client', 'Client')}<th class="hide-m">Objet</th>${th('date', 'Date', 'hide-m')}${fac ? '<th class="hide-m">Payée par</th>' : ''}${th('ttc', 'Total TTC', 'n')}<th>Statut</th></tr></thead><tbody>
 ${list.map(d => `<tr data-href="#/doc/${d.id}"><td><span class="num">${h(d.type === 'modele' ? d.nom : d.numero || 'Brouillon')}</span>${['acompte', 'avoir', 'situation'].includes(d.kind) ? `<small class="muted">${kindLabel(d)}</small>` : ''}</td>
 <td><div class="who">${avatar(d.client_nom || d.data.client?.nom)}<span>${h(d.client_nom || d.data.client?.nom || '—')}</span></div></td>
-<td class="hide-m">${h(d.data.objet)}</td><td class="hide-m">${dfr(d.date)}</td><td class="n amt">${eur(d.total_ttc)}</td><td>${pill(d)}</td></tr>`).join('')}</tbody></table>`
-  : `<div class="empty">${icon('file', 28)}<p>${empty}</p></div>`;
+<td class="hide-m">${h(d.data.objet)}</td><td class="hide-m">${dfr(d.date)}</td>${fac ? `<td class="hide-m">${d.type === 'facture' ? paie(d) : ''}</td>` : ''}<td class="n amt">${eur(d.total_ttc)}</td><td>${pill(d)}</td></tr>`).join('')}</tbody></table>`
+    : `<div class="empty">${icon('file', 28)}<p>${empty}</p></div>`;
+};
 document.addEventListener('click', e => {
   const r = e.target.closest('[data-href]');
   if (r && !e.target.closest('a,button,input,select,textarea,label,summary')) location.hash = r.dataset.href;
+});
+// Menus ⋯ et « Options » : fermés par un clic à côté, Échap, ou un clic dans la feuille du document (iframe : seul le blur de la fenêtre le signale).
+const fermerMenus = (garder) => document.querySelectorAll('details.menu[open],details.docopts[open]').forEach(d => d.contains(garder) || d.removeAttribute('open'));
+document.addEventListener('pointerdown', e => fermerMenus(e.target));
+document.addEventListener('keydown', e => e.key === 'Escape' && fermerMenus());
+addEventListener('blur', () => setTimeout(() => document.activeElement?.tagName === 'IFRAME' && fermerMenus()));
+// Clic droit (appui long sur téléphone) sur un devis / une facture des listes : les actions courantes sans ouvrir le document.
+// Le serveur garde les règles (facture émise ni modifiable ni supprimable).
+document.addEventListener('contextmenu', async e => {
+  const tr = e.target.closest('table.docs tr[data-href]');
+  if (!tr) return;
+  e.preventDefault();
+  $('.ctxm')?.remove();
+  const id = +tr.dataset.href.split('/').pop(), d = await api('documents/' + id).catch(() => null);
+  if (!d) return;
+  const isFac = d.type === 'facture', isMod = d.type === 'modele', emise = isFac && !!d.numero;
+  const statut = async s => { await api('documents/' + id, 'PUT', { statut: s }); toast('Statut mis à jour'); route(); };
+  const items = [
+    ['file', emise ? 'Ouvrir' : 'Ouvrir et modifier', () => { location.hash = '#/doc/' + id; }],
+    !emise && ['note', 'Renommer', async () => {
+      const v = await modal({ title: isMod ? 'Renommer le devis type' : 'Renommer', text: isMod ? '' : `Le titre du document (colonne « Objet »). Le numéro ${h(d.numero || '')} ne change pas.`, ok: 'Renommer', fields: [{ name: 'n', label: isMod ? 'Nom' : 'Titre', value: isMod ? d.nom : d.data.objet, required: true }] });
+      if (!v) return;
+      await api('documents/' + id, 'PUT', isMod ? { nom: v.n } : { data: { ...d.data, objet: v.n } });
+      toast('Renommé'); route();
+    }],
+    ['download', 'Télécharger le PDF', () => open(`/api/documents/${id}/pdf`)],
+    ['download', 'Télécharger en Word', () => { location.href = `/api/documents/${id}/docx`; }],
+    ['download', 'Télécharger en Excel', () => { location.href = `/api/documents/${id}/xlsx`; }],
+    ['printer', 'Imprimer', () => open(`/api/documents/${id}/html?print=1`)],
+    !isMod && (!isFac || emise) && ['send', 'Envoyer au client', async () => { if (await sendDialog(id)) route(); }],
+    !isMod && ['link', isFac ? 'Copier le lien de paiement' : 'Copier le lien de signature', async () => { await navigator.clipboard.writeText(`${location.origin}/p/${d.token}`); toast('Lien copié'); }],
+    d.type === 'devis' && '-',
+    d.type === 'devis' && d.statut !== 'envoye' && ['send', 'Marquer comme envoyé', () => statut('envoye')],
+    d.type === 'devis' && d.statut !== 'accepte' && ['check', 'Marquer comme accepté', () => statut('accepte')],
+    d.type === 'devis' && d.statut !== 'refuse' && ['x', 'Marquer comme refusé', () => statut('refuse')],
+    '-',
+    ['copy', 'Dupliquer', async () => { location.hash = '#/doc/' + (await api(`documents/${id}/dupliquer`, 'POST')).id; toast('Copie créée'); }],
+    !emise && ['trash', 'Supprimer', async () => { if (await confirmer(`Supprimer ${d.numero || d.nom || 'ce brouillon'} ?`, 'Cette action est définitive.')) { await api('documents/' + id, 'DELETE'); toast('Document supprimé'); route(); } }],
+  ].filter(Boolean);
+  const m = document.createElement('div');
+  m.className = 'ctxm';
+  m.setAttribute('role', 'menu');
+  m.innerHTML = items.map((x, i) => (x === '-' ? '<hr>' : `<button role="menuitem" data-i="${i}" class="${x[0] === 'trash' ? 'danger' : ''}">${icon(x[0], 16)}${x[1]}</button>`)).join('');
+  document.body.append(m);
+  m.style.left = Math.min(e.clientX, innerWidth - m.offsetWidth - 8) + 'px';
+  m.style.top = Math.min(e.clientY, innerHeight - m.offsetHeight - 8) + 'px';
+  m.querySelector('button').focus();
+  const fermer = () => { m.remove(); removeEventListener('pointerdown', dehors, true); removeEventListener('keydown', esc, true); removeEventListener('scroll', fermer, true); };
+  const dehors = ev => { if (!m.contains(ev.target)) fermer(); };
+  const esc = ev => { if (ev.key === 'Escape') fermer(); };
+  addEventListener('pointerdown', dehors, true); addEventListener('keydown', esc, true); addEventListener('scroll', fermer, true);
+  m.onclick = ev => {
+    const b = ev.target.closest('[data-i]');
+    if (!b) return;
+    fermer();
+    Promise.resolve(items[b.dataset.i][2]()).catch(err => toast(err.message, 'crit'));
+  };
 });
 
 // ---------- Avancement des chantiers : une barre et des phrases, sans calcul à faire ----------
@@ -806,7 +875,7 @@ function shell() {
   <button class="btn search" id="openK" aria-label="Rechercher">${icon('search', 16)}<span>Rechercher</span><kbd>Ctrl K</kbd></button></header>
   <main id="view" class="page" tabindex="-1"></main>
 </div>
-<button class="voix" id="voix" aria-label="Parler à Kadra" title="Parler à Kadra"><span class="o">${icon('mic', 24)}</span><i class="ondes" aria-hidden="true"><b></b><b></b><b></b><b></b></i>
+<button class="voix" id="voix" aria-label="Parler à Kadra" title="Parler à Kadra"><span class="o">${icon('mic', 24)}</span><span class="t">Parler à Kadra</span><i class="ondes" aria-hidden="true"><b></b><b></b><b></b><b></b></i>
   <span class="l">J’écoute… appuyez pour envoyer</span><span class="r">Kadra réfléchit…</span></button>
 <nav class="tabbar" aria-label="Navigation rapide">
   <a href="#/">${icon('home', 22)}Accueil</a><a href="#/agenda">${icon('calendar', 22)}Agenda</a>
@@ -846,13 +915,13 @@ document.addEventListener('click', e => {
   if (e.target.closest('[data-install-non]')) { try { localStorage.setItem('kadra_install_vu', '1'); } catch {} montrerInstall(); }
 });
 if ('serviceWorker' in navigator) navigator.serviceWorker.register('/sw.js').catch(() => {});
-// Pastilles du menu : e-mails non lus, rendez-vous à confirmer.
+// Pastilles du menu : e-mails non lus, rendez-vous à confirmer, modèles à reproduire (équipe Kadra).
 async function badges(k) {
   k ||= await api('compteurs').catch(() => null);
   if (!k) return;
   const set = (r, n) => $$(`[data-badge="${r}"]`).forEach(b => { b.hidden = !n; b.textContent = n > 99 ? '99+' : n; });
-  set('mails', k.non_lus); set('agenda', k.rdv_proposes);
-  $$('[data-badge="menu"]').forEach(b => { b.hidden = !(k.non_lus + k.rdv_proposes); });
+  set('mails', k.non_lus); set('agenda', k.rdv_proposes); set('kadra', k.modeles);
+  $$('[data-badge="menu"]').forEach(b => { b.hidden = !(k.non_lus + k.rdv_proposes + (k.modeles || 0)); });
 }
 function head(title, sub = '', actions = '') {
   const t = $('#tacts'), n = t.cloneNode(false); t.replaceWith(n); // pas d'écouteurs hérités de la page précédente
@@ -1007,7 +1076,11 @@ ${mode === 'signup' ? '<p class="au-note">Mot de passe : 8 caractères minimum.<
       if (mode === 'reset') { await api('auth/reset', 'POST', { ...v, token: location.hash.split('/')[2] }); history.replaceState(null, '', '#/'); }
       else await api('auth/' + mode, 'POST', v);
       await boot();
-    } catch (ex) { err(ex.message); fleche.classList.remove('charge'); fleche.disabled = false; }
+    } catch (ex) {
+      err(ex.message); fleche.classList.remove('charge'); fleche.disabled = false;
+      // mot de passe rempli par le navigateur (celui d'un autre compte) alors que le champ était replié : on le montre, vide, pour le taper
+      if (mdpCache && grp.classList.contains('etape1')) { grp.classList.remove('etape1'); mdpCache.tabIndex = 0; mdpCache.value = ''; pret(); setTimeout(() => mdpCache.focus(), 60); }
+    }
   };
 }
 
@@ -1109,6 +1182,29 @@ let caseVue = 'todo'; // téléphone : la case affichée sous les chiffres (« A
 const encoreDu = k => k.a_encaisser - k.en_retard > 0.005 ? `${k.en_retard ? 'et' : 'rien en retard,'} ${eur(k.a_encaisser - k.en_retard)} à venir` : k.en_retard ? 'C’est tout ce qu’on vous doit' : 'Personne ne vous doit rien';
 
 // Accueil « cockpit » : tout tient dans l'écran, sur ordinateur comme sur téléphone (Hivan ne veut pas descendre)
+// Raccourcis de l'accueil sur téléphone : l'artisan choisit les 4 qu'il utilise le plus (gardés sur l'appareil)
+const RACCOURCIS = {
+  dicter: ['Dicter un devis', 'mic', '#/nouveau'], devis: ['Nouveau devis', 'file', () => nouveauDevis()],
+  depense: ['Ticket d’achat', 'cart', '#/depenses?new'], note: ['Note de chantier', 'note', '#/notes'],
+  rdv: ['Rendez-vous', 'calendar', '#/agenda?new'], client: ['Nouveau client', 'users', () => editClient({})],
+  chantier: ['Nouveau chantier', 'helmet', '#/chantiers?new'], factures: ['Factures', 'receipt', '#/factures'],
+  retard: ['Impayés', 'alert', '#/factures?retard'], mails: ['E-mails', 'mail', '#/mails'],
+  clients: ['Clients', 'users', '#/clients'], depenses: ['Dépenses', 'cart', '#/depenses'],
+};
+const cleRac = () => 'kadra_raccourcis_' + ME.user.id;
+const mesRaccourcis = () => { try { const v = JSON.parse(localStorage.getItem(cleRac())); if (Array.isArray(v)) return v.filter(x => RACCOURCIS[x]).slice(0, 4); } catch {} return ['dicter', 'depense', 'note', 'rdv']; };
+async function changerRaccourcis() {
+  const mes = mesRaccourcis();
+  const p = modal({ title: 'Vos raccourcis', text: 'Choisissez jusqu’à 4 boutons pour l’accueil.', ok: 'Enregistrer',
+    html: Object.entries(RACCOURCIS).map(([x, [l]]) => field({ name: x, label: l, type: 'checkbox', value: mes.includes(x) })).join('') });
+  const limite = () => { const n = $$('input[type=checkbox]:checked', dlg).length; $$('input[type=checkbox]', dlg).forEach(c => { c.disabled = !c.checked && n >= 4; }); };
+  dlg.addEventListener('change', limite); limite();
+  const v = await p; dlg.removeEventListener('change', limite);
+  if (!v) return;
+  try { localStorage.setItem(cleRac(), JSON.stringify(Object.keys(RACCOURCIS).filter(x => v[x]))); } catch {}
+  route();
+}
+
 async function dashboard() {
   const k = await api('dashboard');
   const enRetard = k.chantiers.filter(c => chantierInfo(c).late);
@@ -1137,11 +1233,28 @@ async function dashboard() {
   const heureDe = at => new Date(at).toLocaleTimeString(LOC, { hour: '2-digit', minute: '2-digit' });
   const fait = k.fait.map(f => `<li data-href="${f.href}" class="${f.k}"><span class="hr">${heureDe(f.at)}</span><i aria-hidden="true"></i><div class="t"><b>${h(f.t)}</b><small>${h(f.s)}</small></div></li>`).join('');
   const nbTodo = groupes.reduce((s, g) => s + (g.n || g.items.length), 0);
-  const ligne = (i, g) => `<li data-g="${g.g}" data-lien="${g.href}" data-href="${i.href}">${i.av}<div class="t"><b>${h(i.t)}</b><small>${h(i.s)}</small></div>${i.r ? `<div class="r">${i.r}</div>` : ''}${i.a || ''}</li>`;
+  // petite icône du sujet sur la pastille du client (rendez-vous, e-mail, argent…)
+  const SUJET = { rdv: 'calendar', mails: 'mail', argent: 'euro', facturer: 'file', devis: 'send', chantiers: 'helmet' };
+  const ligne = (i, g) => `<li data-g="${g.g}" data-lien="${g.href}" data-href="${i.href}"><span class="avw">${i.av}<span class="suj ${g.g}">${icon(SUJET[g.g], 10)}</span></span><div class="t"><b>${h(i.t)}</b><small>${h(i.s)}</small></div>${i.r ? `<div class="r">${i.r}</div>` : ''}${i.a || ''}</li>`;
   const plus = '<a class="plus" data-plus hidden></a>';
-  const chLigne = c => { const late = chantierInfo(c).late;
-    return `<li data-href="#/chantier/${c.id}"><div class="t"><b>${h(c.nom)}</b><small${late ? ' class="crit"' : ''}>${h([c.client_nom, finTexte(c)].filter(Boolean).join(' · '))}</small>${c.statut === 'a_venir' ? '' : avance(c)}</div>
-<div class="r">${late || c.statut === 'a_venir' ? chantierPill(c) : `<b>${c.avancement || 0} %</b>`}</div></li>`; };
+  // la dernière photo du chantier en vignette (sinon un casque), l'avancement en anneau
+  const chLigne = c => { const late = chantierInfo(c).late, a = c.avancement || 0;
+    return `<li data-href="#/chantier/${c.id}">${c.photo_id ? `<img class="vig" src="/api/photos/${c.photo_id}/image" alt="" loading="lazy">` : `<span class="vig">${icon('helmet', 20)}</span>`}
+<div class="t"><b>${h(c.nom)}</b><small>${h(c.client_nom || '')}</small>${late || c.statut === 'a_venir' ? chantierPill(c) : `<small>${h(finTexte(c))}</small>`}</div>
+${c.statut === 'a_venir' ? '' : `<span class="ring${late ? ' late' : ''}" style="--p:${a}" role="img" aria-label="Travaux faits : ${a} %">${a} %</span>`}</li>`; };
+  // petits dessins des chiffres : CA mois par mois, retards par ancienneté, part de chaque chantier dans le travail à venir
+  const moisCA = Array.from({ length: new Date().getMonth() + 1 }, (_, i) => k.ca.filter(r => r[0].startsWith(`${new Date().getFullYear()}-${String(i + 1).padStart(2, '0')}`)).reduce((s, r) => s + r[1], 0));
+  const spark = (() => { if (moisCA.length < 2) return ''; const mx = Math.max(...moisCA, 1), W = 200, H = 34;
+    const pts = moisCA.map((v, i) => [i * W / (moisCA.length - 1), H - 3 - Math.max(0, v) / mx * (H - 6)]), d = pts.map((p, i) => (i ? 'L' : 'M') + p.map(n => n.toFixed(1)).join(' ')).join(' '), z = pts.at(-1);
+    return `<svg class="mini" viewBox="0 0 ${W} ${H}" preserveAspectRatio="none" aria-hidden="true"><path d="${d} L${W} ${H} L0 ${H}Z" fill="rgba(124,155,255,.25)"/><path d="${d}" fill="none" stroke="#9db4ff" stroke-width="2" vector-effect="non-scaling-stroke" stroke-linejoin="round"/><circle cx="${z[0]}" cy="${z[1]}" r="3" fill="#fff"/></svg>`; })();
+  const barre = (parts, leg) => parts.some(p => p[1] > 0.005) ? `<div class="mbar" role="img" aria-label="${h(parts.filter(p => p[1] > 0.005).map(p => `${p[0]} : ${eur(p[1])}`).join(', '))}">${parts.filter(p => p[1] > 0.005).map(p => `<i style="flex:${p[1].toFixed(2)};background:${p[2]}" title="${h(p[0])} : ${eur(p[1])}"></i>`).join('')}</div>${leg ? `<div class="mleg">${parts.filter(p => p[1] > 0.005).map(p => `<span><i style="background:${p[2]}"></i>${h(p[0])}</span>`).join('')}</div>` : ''}` : '';
+  const ageRetard = f => -joursJusqua(f.echeance), resteF = f => f.total_ttc - f.regle;
+  const retards = barre([['moins de 30 j', k.factures_retard.filter(f => ageRetard(f) < 30).reduce((s, f) => s + resteF(f), 0), 'var(--warn)'],
+    ['30 à 60 j', k.factures_retard.filter(f => ageRetard(f) >= 30 && ageRetard(f) < 60).reduce((s, f) => s + resteF(f), 0), '#e8590c'],
+    ['plus de 60 j', k.factures_retard.filter(f => ageRetard(f) >= 60).reduce((s, f) => s + resteF(f), 0), 'var(--crit)']], true);
+  const BLEUS = ['var(--plan)', 'color-mix(in srgb,var(--plan) 60%,#fff)', 'color-mix(in srgb,var(--plan) 35%,#fff)', 'color-mix(in srgb,var(--plan) 20%,#fff)'];
+  const parChantier = barre([...k.chantiers].sort((a, b) => b.budget_ht * (100 - (b.avancement || 0)) - a.budget_ht * (100 - (a.avancement || 0)))
+    .map((c, i) => [c.nom, c.budget_ht * (1 - (c.avancement || 0) / 100), BLEUS[Math.min(i, 3)]]));
   const cases = [['todo', 'À valider', nbTodo], ['kfait', 'Kadra', k.fait.length], ['rdv', 'Aujourd’hui'], ['ch', 'Chantiers', k.chantiers.length]];
   // « Aujourd'hui » : les rendez-vous du jour d'abord, puis ceux des jours suivants
   const auj = k.rdv.filter(r => r.debut.slice(0, 10) === today()), ensuite = k.rdv.filter(r => !auj.includes(r));
@@ -1157,11 +1270,12 @@ async function dashboard() {
   view.innerHTML = `<div class="cockpit">
 <div class="installer" data-install hidden>${LOGO}<div><b>Installez Kadra sur votre téléphone</b><small>Il s’ouvrira comme une appli, en plein écran.</small></div>
 <button class="btn primary sm" data-installer>Installer</button><button class="btn ghost icon" data-install-non aria-label="Plus tard" title="Plus tard">${icon('x', 16)}</button></div>
+<nav class="racc" aria-label="Raccourcis">${mesRaccourcis().map(x => `<button data-rac="${x}">${icon(RACCOURCIS[x][1], 22)}<span>${RACCOURCIS[x][0]}</span></button>`).join('')}<button class="mod" data-rac-mod aria-label="Changer les raccourcis">${icon('sliders', 20)}<span>Changer</span></button></nav>
 <section class="kpis" aria-label="En bref">
-  <a class="kpi ca-an" href="#/analyse"><span class="ki">${icon('chart', 20)}</span><span class="l" data-c="CA ${an}">Chiffre d’affaires ${an}</span><span class="v">${eur(ca)} <small>HT</small></span><small>${pct === null ? `${eur(k.encaisse_annee)} encaissés` : Math.abs(pct) < 100 ? `${pct >= 0 ? '+' : ''}${pct} % par rapport à ${an - 1} à la même date` : `${an - 1} à la même date : ${eur(caAvant)} HT`}</small></a>
-  <a class="kpi crit" href="#/factures?retard"><span class="ki">${icon('euro', 20)}</span><span class="l" data-c="En retard">Paiements en retard</span><span class="v">${eur(k.en_retard)}</span><small>${encoreDu(k)}</small></a>
-  <a class="kpi" href="${k.a_facturer.length === 1 ? k.a_facturer[0].href : '#/'}" data-voir="facturer"><span class="ki">${icon('file', 20)}</span><span class="l" data-c="À facturer">À facturer</span><span class="v">${eur(aFacturer)}</span><small>${k.a_facturer.length ? `${plural(k.a_facturer.length, 'facture')} à faire` : 'Rien d’oublié'}</small></a>
-  <a class="kpi" href="#/chantiers"><span class="ki">${icon('helmet', 20)}</span><span class="l" data-c="Signé à venir">Travail signé à venir</span><span class="v">${eur(av.ht)} <small>HT</small></span><small>${av.nb ? `${plural(av.nb, 'chantier')}${av.jusqua ? `, jusqu’au ${new Date(av.jusqua).toLocaleDateString(LOC, { day: 'numeric', month: 'long' })}` : ''}` : 'Aucun chantier signé'}${late ? ` · ${late} en retard` : ''}</small></a>
+  <a class="kpi ca-an" href="#/analyse"><span class="ki">${icon('chart', 20)}</span><span class="l" data-c="CA ${an}">Chiffre d’affaires ${an}</span><span class="v">${eur(ca)} <small>HT</small></span><small>${pct === null ? `${eur(k.encaisse_annee)} encaissés` : Math.abs(pct) < 100 ? `${pct >= 0 ? '+' : ''}${pct} % par rapport à ${an - 1} à la même date` : `${an - 1} à la même date : ${eur(caAvant)} HT`}</small>${spark}</a>
+  <a class="kpi crit" href="#/factures?retard"><span class="ki">${icon('euro', 20)}</span><span class="l" data-c="En retard">Paiements en retard</span><span class="v">${eur(k.en_retard)}</span><small>${encoreDu(k)}</small>${retards}</a>
+  <a class="kpi${aFacturer ? '' : ' fini'}" href="${k.a_facturer.length === 1 ? k.a_facturer[0].href : '#/'}" data-voir="facturer"><span class="ki">${icon(aFacturer ? 'file' : 'check', 20)}</span><span class="l" data-c="À facturer">À facturer</span><span class="v">${eur(aFacturer)}</span><small>${k.a_facturer.length ? `${plural(k.a_facturer.length, 'facture')} à faire` : 'Rien d’oublié'}</small></a>
+  <a class="kpi" href="#/chantiers"><span class="ki">${icon('helmet', 20)}</span><span class="l" data-c="Signé à venir">Travail signé à venir</span><span class="v">${eur(av.ht)} <small>HT</small></span><small>${av.nb ? `${plural(av.nb, 'chantier')}${av.jusqua ? `, jusqu’au ${new Date(av.jusqua).toLocaleDateString(LOC, { day: 'numeric', month: 'long' })}` : ''}` : 'Aucun chantier signé'}${late ? ` · ${late} en retard` : ''}</small>${parChantier}</a>
 </section>
 <div class="seg ctabs" role="group" aria-label="Afficher">${cases.map(([b, l, n]) => `<button data-case="${b}" class="${on(b)}">${l}${n ? ` <em>${n}</em>` : ''}</button>`).join('')}</div>
 <section class="box todo${on('todo')}" data-lien="${groupes.length === 1 ? groupes[0].href : ''}"><div class="bh"><h2>Attend votre accord</h2>${plus}</div>
@@ -1209,6 +1323,9 @@ ${fait ? `<p class="fsous">Aujourd’hui, sans vous déranger : <b>${plural(k.fa
     if (en) encaisser(k, k.factures_retard.find(f => f.id === +en.dataset.encaisser), en.closest('li'));
     const go = e.target.closest('[data-go]');
     if (go) location.hash = go.dataset.go;
+    const rc = e.target.closest('[data-rac]');
+    if (rc) { const a = RACCOURCIS[rc.dataset.rac][2]; typeof a === 'function' ? a() : (location.hash = a); }
+    if (e.target.closest('[data-rac-mod]')) changerRaccourcis();
     const ok = e.target.closest('[data-okp],[data-nop]');
     if (ok) busy(ok, async () => {
       if (ok.dataset.okp) { await api('rdv/' + ok.dataset.okp, 'PUT', { statut: 'confirme' }); toast('Ajouté à l’agenda'); }
@@ -1483,6 +1600,53 @@ const FILTRES = {
     ['payee', 'Payées', d => d.kind !== 'avoir' && d.numero && d.regle >= d.total_ttc - 0.005], ['brouillon', 'Brouillons', d => !d.numero], ['avoir', 'Avoirs', d => d.kind === 'avoir']],
   modele: [['tous', 'Tous', () => true]],
 };
+const PERIODE = {}; // mois / année choisis dans les listes Devis et Factures (gardés en revenant d'une fiche)
+const TRI = {}; // tri choisi par liste (titre de colonne cliqué, ou liste « Trier » sur téléphone)
+const CLES_TRI = {
+  date: d => String(d.date || ''), ttc: d => d.total_ttc || 0,
+  client: d => (d.client_nom || d.data.client?.nom || '').toLowerCase(), num: d => d.numero || d.nom || '',
+};
+const trier = (list, { k, dir }) => [...list].sort((a, b) => {
+  const x = CLES_TRI[k](a), y = CLES_TRI[k](b);
+  return dir * (typeof x === 'number' ? x - y : x.localeCompare(y, 'fr', { numeric: true })) || b.id - a.id;
+});
+// Filtre par client (titre « Client » des listes, bouton « Clients » sur téléphone) : une case par client, appliqué tout de suite.
+// choix = clés cochées (null = tous) ; poser(c) l'enregistre et redessine la liste.
+function filtreClients(btn, docs, choix, poser) {
+  if ($('#fcli')) return $('#fcli').fermer();
+  const noms = [...new Map(docs.map(d => [CLES_TRI.client(d), d.client_nom || d.data.client?.nom]).filter(([k]) => k)).entries()].sort((a, b) => a[0].localeCompare(b[0], 'fr'));
+  const p = document.createElement('div');
+  p.id = 'fcli'; p.className = 'ctxm fcli';
+  p.innerHTML = `${noms.length > 8 ? '<input id="fcq" placeholder="Chercher un client" aria-label="Chercher un client" autocomplete="off">' : ''}
+<div class="fca"><button type="button" data-tout="1">Tout cocher</button><button type="button" data-tout="0">Tout décocher</button></div>
+<div class="fcl">${noms.map(([k, n]) => `<label><input type="checkbox" value="${h(k)}"${!choix || choix.includes(k) ? ' checked' : ''}><span>${h(n)}</span><small>${docs.filter(d => CLES_TRI.client(d) === k).length}</small></label>`).join('') || '<p class="muted">Aucun client.</p>'}</div>`;
+  document.body.append(p);
+  const r = btn.getBoundingClientRect();
+  $('.fcl', p).style.maxHeight = Math.max(150, innerHeight - r.bottom - (innerWidth <= 900 ? 190 : 110)) + 'px'; // au-dessus de la barre du bas sur téléphone
+  p.style.cssText = `position:fixed;top:${Math.round(r.bottom + 6)}px;left:${Math.round(Math.max(8, Math.min(r.left, innerWidth - p.offsetWidth - 8)))}px`;
+  const cases = () => $$('.fcl input', p);
+  const maj = () => { const c = cases().filter(x => x.checked).map(x => x.value); poser(c.length === cases().length ? null : c); };
+  p.onchange = e => e.target.type === 'checkbox' && maj();
+  p.onclick = e => { const t = e.target.closest('[data-tout]'); if (!t) return; cases().forEach(x => { if (!x.closest('label').hidden) x.checked = t.dataset.tout === '1'; }); maj(); };
+  if ($('#fcq', p)) { $('#fcq', p).oninput = () => { const q = $('#fcq', p).value.trim().toLowerCase(); $$('.fcl label', p).forEach(l => { l.hidden = q && !l.textContent.toLowerCase().includes(q); }); }; $('#fcq', p).focus(); }
+  // fermé par un clic à côté (pas sur le titre « Client » : il referme lui-même), Échap, défilement de la page ou changement de page
+  const dehors = e => !p.contains(e.target) && !e.target.closest('[data-fcli],#bcli') && p.fermer();
+  const echap = e => e.key === 'Escape' && p.fermer();
+  const defile = e => !p.contains(e.target) && p.fermer();
+  p.fermer = () => { p.remove(); document.removeEventListener('pointerdown', dehors); document.removeEventListener('keydown', echap); removeEventListener('scroll', defile, true); removeEventListener('hashchange', p.fermer); };
+  document.addEventListener('pointerdown', dehors); document.addEventListener('keydown', echap); addEventListener('scroll', defile, true); addEventListener('hashchange', p.fermer);
+}
+// Factures : une barre qui montre où en est l'argent (payé / pas encore dû / en retard) ; un clic sur un morceau filtre la liste
+function argentBarre(docs, F) {
+  const fac = docs.filter(d => d.kind !== 'avoir' && d.numero), reste = d => d.total_ttc - d.regle, s = (a, f) => a.reduce((t, d) => t + f(d), 0);
+  const parts = [['payee', 'Payé', s(fac, d => Math.min(d.regle, d.total_ttc)), 'var(--good)'], ['apayer', 'Pas encore dû', s(fac.filter(d => F[1][2](d) && !F[2][2](d)), reste), 'color-mix(in srgb,var(--plan) 35%,#fff)'],
+    ['retard', 'En retard', s(docs.filter(F[2][2]), reste), 'var(--crit)']].filter(p => p[2] > 0.005);
+  const tot = parts.reduce((t, p) => t + p[2], 0);
+  if (!tot) return '';
+  return `<section class="panel argent"><div class="ah"><b>Où en est l’argent</b><small>${eur(tot)} facturés au total</small></div>
+<div class="abar">${parts.map(p => `<button data-fx="${p[0]}" style="flex:${p[2].toFixed(2)};background:${p[3]}" title="${p[1]} : ${eur(p[2])}" aria-label="${p[1]} : ${eur(p[2])}"></button>`).join('')}</div>
+<div class="mleg">${parts.map(p => `<span><i style="background:${p[3]}"></i>${p[1]} <b>${eur(p[2])}</b> <small>${Math.round(100 * p[2] / tot)} %</small></span>`).join('')}</div></section>`;
+}
 async function liste(type, filtre = 'tous') {
   const docs = await api('documents?type=' + type);
   const sum = (a, f = d => d.total_ttc) => eur(a.reduce((s, d) => s + f(d), 0));
@@ -1505,19 +1669,42 @@ async function liste(type, filtre = 'tous') {
     { ic: 'euro', l: 'À encaisser', v: sum(docs.filter(F[1][2]), reste), s: plural(nbF(F[1][2]), 'facture') + ' à payer' },
     { ic: 'alert', l: 'En retard', v: sum(docs.filter(F[2][2]), reste), s: nbF(F[2][2]) ? P(plural(nbF(F[2][2]), 'facture') + ' après l’échéance', 'crit', 'alert') : 'Rien en retard' },
     { ic: 'receipt', l: `Facturé en ${an}`, v: sum(docs.filter(d => d.numero && cetteAnnee(d))), s: 'TTC, avoirs déduits' },
-  ]) : '';
+  ]) + argentBarre(docs, F) : '';
   view.innerHTML = `${chiffres ? `<div style="margin-bottom:18px">${chiffres}</div>` : ''}<div class="row" style="display:flex;gap:12px;flex-wrap:wrap;align-items:center;margin-bottom:14px">
 ${F.length > 1 ? `<div class="seg" role="tablist">${F.map(([k, l, f]) => `<button data-f="${k}" class="${k === filtre ? 'on' : ''}">${l} <em>${docs.filter(f).length}</em></button>`).join('')}</div>` : ''}
+${type !== 'modele' ? `<select id="pmois" aria-label="Mois" style="width:auto;flex:0 0 auto"><option value="">Tous les mois</option>${Array.from({ length: 12 }, (_, i) => `<option value="${String(i + 1).padStart(2, '0')}">${new Date(2000, i, 1).toLocaleDateString(LOC, { month: 'long' })}</option>`).join('')}</select>
+<select id="pan" aria-label="Année" style="width:auto;flex:0 0 auto"><option value="">Toutes les années</option>${[...new Set(docs.map(d => String(d.date || '').slice(0, 4)).filter(Boolean))].sort().reverse().map(a => `<option>${a}</option>`).join('')}</select>` : ''}
+<button type="button" class="btn tri-m" id="bcli" aria-haspopup="true" style="flex:0 0 auto"></button>
+<select id="tri" class="tri-m" aria-label="Trier" style="width:auto;flex:0 0 auto">${[['date:-1', 'Plus récents'], ['date:1', 'Plus anciens'], ['ttc:-1', 'Montant le plus élevé'], ['ttc:1', 'Montant le plus bas'], ['client:1', 'Client de A à Z'], ['client:-1', 'Client de Z à A'], ['num:-1', 'Numéro décroissant'], ['num:1', 'Numéro croissant']].map(([v, l]) => `<option value="${v}">${l}</option>`).join('')}</select>
 <input id="q" style="flex:1 1 240px;max-width:380px" placeholder="Rechercher un client, un objet, un numéro" aria-label="Rechercher"></div>
 <section class="panel" id="rows"></section>`;
+  const per = PERIODE[type] ||= { m: '', a: '', c: null };
+  if ($('#pmois')) { $('#pmois').value = per.m; $('#pan').value = per.a; if ($('#pan').value !== per.a) per.a = ''; }
+  const dansPeriode = d => { const t = String(d.date || ''); return (!per.a || t.startsWith(per.a)) && (!per.m || t.slice(5, 7) === per.m) && (!per.c || per.c.includes(CLES_TRI.client(d))); };
   const draw = () => {
     const q = $('#q').value.toLowerCase(), f = F.find(x => x[0] === filtre)[2];
-    $('#rows').innerHTML = docTable(docs.filter(d => f(d) && (!q || JSON.stringify([d.numero, d.nom, d.client_nom, d.data.objet]).toLowerCase().includes(q))),
-      type === 'facture' ? 'Aucune facture ici. Une facture se crée depuis un devis accepté.<br><a href="#/import">Vous en avez déjà ailleurs ? Importez-les</a>' : type === 'modele' ? 'Aucun devis type. Créez-en un, ou enregistrez un devis existant comme devis type.' : 'Aucun devis ici. Dictez votre premier devis.<br><a href="#/import">Vous en avez déjà ailleurs ? Importez-les</a>');
+    $$('[data-f] em', view).forEach(e => { e.textContent = docs.filter(d => dansPeriode(d) && F.find(x => x[0] === e.parentNode.dataset.f)[2](d)).length; });
+    $('#tri').value = `${tri.k}:${tri.dir}`;
+    $('#bcli').textContent = per.c ? `Clients (${per.c.length}) ▾` : 'Tous les clients ▾';
+    $('#bcli').classList.toggle('on', !!per.c);
+    $('#rows').innerHTML = docTable(trier(docs.filter(d => dansPeriode(d) && f(d) && (!q || JSON.stringify([d.numero, d.nom, d.client_nom, d.data.objet]).toLowerCase().includes(q))), tri),
+      per.c ? 'Rien pour les clients cochés.<br><a href="#" data-tousc>Montrer tous les clients</a>' : type === 'facture' ?'Aucune facture ici. Une facture se crée depuis un devis accepté.<br><a href="#/import">Vous en avez déjà ailleurs ? Importez-les</a>' : type === 'modele' ? 'Aucun devis type. Créez-en un, ou enregistrez un devis existant comme devis type.' : 'Aucun devis ici. Dictez votre premier devis.<br><a href="#/import">Vous en avez déjà ailleurs ? Importez-les</a>', tri, per.c);
   };
+  const tri = TRI[type] ||= { k: 'date', dir: -1 };
   draw();
   $('#q').oninput = draw;
+  const clients = b => filtreClients(b, docs, per.c, c => { per.c = c; draw(); });
+  $('#bcli').onclick = () => clients($('#bcli'));
+  // même colonne = sens inversé ; autre colonne = plus récent / plus cher / A à Z d'abord ; « Client » = cases à cocher
+  $('#rows').onclick = e => {
+    if (e.target.closest('[data-fcli]')) return clients(e.target.closest('[data-fcli]'));
+    if (e.target.closest('[data-tousc]')) { e.preventDefault(); per.c = null; $('#fcli')?.fermer(); return draw(); }
+    const k = e.target.closest('[data-tri]')?.dataset.tri; if (!k) return; Object.assign(tri, tri.k === k ? { dir: -tri.dir } : { k, dir: k === 'client' ? 1 : -1 }); draw();
+  };
+  $('#tri').onchange = () => { const [k, dir] = $('#tri').value.split(':'); Object.assign(tri, { k, dir: +dir }); draw(); };
+  if ($('#pmois')) $('#pmois').onchange = $('#pan').onchange = () => { per.m = $('#pmois').value; per.a = $('#pan').value; draw(); };
   $$('[data-f]', view).forEach(b => { b.onclick = () => { filtre = b.dataset.f; $$('[data-f]', view).forEach(x => x.classList.toggle('on', x === b)); draw(); }; });
+  $$('[data-fx]', view).forEach(b => { b.onclick = () => $(`[data-f="${b.dataset.fx}"]`, view)?.click(); });
   if ($('#new')) $('#new').onclick = async () => { location.hash = '#/doc/' + (await api('documents', 'POST', type === 'modele' ? { type: 'modele', nom: 'Nouveau devis type', data: emptyData() } : { type: 'facture', data: { ...emptyData(), acompte_pct: 0 } })).id; };
 }
 
@@ -1587,7 +1774,7 @@ html{background:#e9edf4}body{background:transparent!important;padding:28px 12px 
 .page{background:#fff;box-shadow:0 1px 3px rgba(20,27,45,.08),0 14px 36px rgba(20,27,45,.08);border-radius:4px;min-height:1050px;padding:var(--ed-marge,44px 48px)!important;overflow:visible}
 .ed{outline:none;border-radius:3px;min-width:.6em;padding:0 1px;cursor:text;transition:background-color .1s}
 .ed:hover{background:rgba(47,91,234,.08)}.ed:focus{background:rgba(47,91,234,.1);box-shadow:0 0 0 1.5px rgba(47,91,234,.55)}
-.ed:empty::before{content:attr(data-ph);color:#9aa3b5;font-style:italic}.ed.ml{white-space:pre-line}.desc .ed{display:block}
+.ed:empty::before{content:attr(data-ph);color:#9aa3b5;font-style:italic}.ed.ml{white-space:pre-line}.desc .ed{display:inline}
 tr:not(:hover):not(:focus-within) .desc .ed:empty{display:none}.ed.opt:empty::before{opacity:.6}
 .ed-tools{position:absolute;left:100%;top:0;display:none;gap:1px;background:#fff;background-clip:padding-box;border:1px solid #dde2ec;border-left:12px solid transparent;
   border-radius:9px;padding:2px;box-shadow:0 4px 14px rgba(20,27,45,.1);z-index:2;white-space:nowrap}
@@ -1595,6 +1782,10 @@ tr:hover .ed-tools,tr:focus-within .ed-tools{display:flex}
 .ed-tools button{font:14px system-ui;border:0;background:none;width:28px;height:28px;border-radius:7px;cursor:pointer;color:#5a6478}
 .ed-tools button:hover{background:#eef1f7;color:#141b2d}.ed-tools button[data-act=del]:hover{background:#fce8e6;color:#c0362c}
 .ed-add{display:flex;gap:8px;margin:-6px 0 16px}
+img.logo,img.cachet,img.cachet-sign{cursor:move;touch-action:none;-webkit-user-drag:none;user-select:none}
+img.logo:hover,img.cachet:hover,img.cachet-sign:hover{outline:2px dashed rgba(47,91,234,.7);outline-offset:2px}
+.ed-al{position:absolute;left:50%;bottom:100%;transform:translateX(-50%);display:none;gap:1px;background:#fff;border:1px solid #dde2ec;border-radius:9px;padding:2px;box-shadow:0 4px 14px rgba(20,27,45,.12);z-index:3;white-space:nowrap}
+th:hover .ed-al{display:flex}.ed-al button{font:13px system-ui;border:0;background:none;width:26px;height:24px;border-radius:6px;cursor:pointer;color:#5a6478}.ed-al button:hover{background:#eef1f7;color:#141b2d}
 .ed-add button{font:600 13px system-ui;border:1px dashed #b9c4dc;background:#fff;color:#2448c4;border-radius:999px;padding:7px 15px;cursor:pointer}
 .ed-add button:hover{background:#e7edfd;border-style:solid}
 .ed-date,.ed-tva{font:inherit;color:inherit;border:0;background:transparent;padding:0 2px;border-radius:3px;cursor:pointer}
@@ -1612,21 +1803,34 @@ async function editDoc(id) {
   const G = () => (isDevis && !d.signature && d.data.gammes?.length > 1 ? d.data.gammes : null);
   if (G()) { if (!G()[d.data.gamme]) d.data.gamme = 1; G()[d.data.gamme].lignes = d.data.lignes; }
   const emise = isFac && !!d.numero, reste = r2(d.total_ttc - (d.regle || 0));
+  // Actions courantes en boutons à côté de PDF ; le reste dans le menu ⋯
+  const signe = isDevis && d.statut === 'accepte', relance = emise && !isAvoir && reste > 0;
+  const enLigne = [['printer', 'Imprimer', 'print'], ['download', 'Word', 'docx'], ['download', 'Excel', 'xlsx'],
+    signe && ['receipt', 'Facture d’acompte', 'acompte'], relance && ['send', 'Relancer', 'relancer']].filter(Boolean);
   const menu = [
-    ['printer', 'Imprimer', 'print'],
     !isMod && ['link', isFac ? 'Copier le lien de paiement' : 'Copier le lien de signature', 'link'],
-    isDevis && '-', isDevis && ['receipt', 'Facture d’acompte', 'acompte'], isDevis && ['receipt', 'Situation de travaux (avancement)', 'situation'], isDevis && ['receipt', 'Facture finale', 'solde'],
+    isDevis && '-', isDevis && !signe && ['receipt', 'Facture d’acompte', 'acompte'], isDevis && ['receipt', 'Situation de travaux (avancement)', 'situation'], isDevis && ['receipt', 'Facture finale', 'solde'],
     isDevis && (d.chantier_id ? ['helmet', 'Voir le chantier', 'gochantier'] : ['helmet', 'Créer le chantier', 'chantier']),
     isDevis && !d.signature && (G() ? ['layers', 'Retirer les gammes', 'sansgammes'] : ['sparkle', 'Proposer 3 gammes au client', 'gammes']),
     isDevis && ['layers', 'Enregistrer comme devis type', 'tomod'],
     emise && '-', emise && ['code', 'Télécharger le Factur-X (XML)', 'xml'],
-    emise && !isAvoir && reste > 0 && ['send', 'Relancer maintenant', 'relancer'],
     emise && !isAvoir && ['undo', 'Créer un avoir', 'avoir'],
     isFac && d.parent_id && ['file', isAvoir ? 'Voir la facture d’origine' : 'Voir le devis', 'parent'], isFac && d.chantier_id && ['helmet', 'Voir le chantier', 'gochantier'],
     '-', ['copy', 'Dupliquer', 'dup'], !emise && ['trash', 'Supprimer', 'del'],
-  ].filter(Boolean);
-  head(`${kindLabel(d)} ${isMod ? d.nom || '' : d.numero || '(brouillon)'}`, `${h(d.data.client.nom || 'Client à renseigner')}, <b id="subttc">${eur(d.total_ttc)}</b> TTC ${pill(d)}`,
-    `<a class="btn" href="/api/documents/${id}/pdf" target="_blank" rel="noopener">${icon('download', 16)}PDF</a>
+  ].filter(Boolean).filter((m, i, a) => m !== '-' || (i > 0 && a[i - 1] !== '-'));
+  // Annuler / Rétablir, Options et TVA en tête, avec les autres boutons
+  head(`${kindLabel(d)} ${isMod ? d.nom || '' : d.numero || '(brouillon)'}`, `${h(d.data.client.nom || 'Client à renseigner')}, <b id="subttc">${eur(d.total_ttc)}</b> TTC ${pill(d)} <span id="saved" class="muted" aria-live="polite"></span>`,
+    `${emise ? '' : `<button class="btn icon" id="undo" disabled aria-label="Annuler" title="Annuler (Ctrl Z)">${icon('undo', 16)}</button><button class="btn icon" id="redo" disabled aria-label="Rétablir" title="Rétablir (Ctrl Y)">${icon('redo', 16)}</button>`}
+${emise || S.franchise_tva ? '' : `<label class="btn tvabtn" title="TVA de tout le document">TVA<select id="tvadoc" aria-label="TVA de tout le document"><option value="" disabled>Plusieurs taux</option>${TVAS.map(t => `<option value="${t}">${String(t).replace('.', ',')} %</option>`).join('')}</select></label>`}
+<details class="docopts"><summary class="btn">${icon('sliders', 16)}Options</summary><div class="docopts-in">
+   ${isMod ? '<label class="f"><span>Nom du devis type</span><input data-o="nom" style="width:200px"></label>' : ''}
+   ${emise ? '' : `<label class="f"><span>Remise %</span><input type="number" step="0.1" min="0" data-o="data.remise_pct" data-num></label>`}
+   ${isFac || emise ? '' : '<label class="f"><span>Acompte %</span><input type="number" step="1" min="0" data-o="data.acompte_pct" data-num></label>'}
+   ${isFac && !isAvoir && !emise ? '<label class="f"><span>Retenue de garantie %</span><input type="number" step="1" min="0" max="5" data-o="data.retenue_pct" data-num placeholder="0 ou 5"></label>' : ''}
+   <label class="f"><span>Mise en page</span><select data-o="template_id" data-num>${tpls.map(t => `<option value="${t.id}">${h(t.nom)}</option>`).join('')}</select></label>
+  </div></details>
+<a class="btn" href="/api/documents/${id}/pdf" target="_blank" rel="noopener">${icon('download', 16)}PDF</a>
+${enLigne.map(m => `<button class="btn" data-act="${m[2]}">${icon(m[0], 16)}${m[1]}</button>`).join('')}
 ${isMod ? `<a class="btn yellow" href="#/nouveau/${id}">${icon('mic')}Faire un devis avec ce modèle</a>` : `<button class="btn primary" id="send">${icon('send', 16)}${isFac && !emise ? 'Émettre et envoyer' : 'Envoyer'}</button>`}
 <details class="menu"><summary class="btn icon" aria-label="Plus d’actions">${icon('more')}</summary><div class="mp">${menu.map(m => (m === '-' ? '<hr>' : `<button data-act="${m[2]}" class="${m[2] === 'del' ? 'danger' : ''}">${icon(m[0], 16)}${m[1]}</button>`)).join('')}</div></details>`);
 
@@ -1640,16 +1844,6 @@ ${isMod ? `<a class="btn yellow" href="#/nouveau/${id}">${icon('mic')}Faire un d
  ${emise ? `<div class="ask">${icon('shield')}<div>${isAvoir ? 'Avoir émis' : 'Facture émise'} : la loi interdit de la modifier ou de la supprimer. ${isAvoir ? '' : 'Pour corriger, créez un avoir (menu ⋯).'}</div></div>` : ''}
  <div id="qs"></div>
  <div class="gammes" id="gammes" hidden></div>
- <div class="docbar">
-  <details class="docopts"><summary class="btn">${icon('sliders', 16)}Options</summary><div class="docopts-in">
-   ${isMod ? '<label class="f"><span>Nom du devis type</span><input data-o="nom" style="width:200px"></label>' : ''}
-   ${emise ? '' : `<label class="f"><span>Remise %</span><input type="number" step="0.1" min="0" data-o="data.remise_pct" data-num></label>`}
-   ${isFac || emise ? '' : '<label class="f"><span>Acompte %</span><input type="number" step="1" min="0" data-o="data.acompte_pct" data-num></label>'}
-   ${isFac && !isAvoir && !emise ? '<label class="f"><span>Retenue de garantie %</span><input type="number" step="1" min="0" max="5" data-o="data.retenue_pct" data-num placeholder="0 ou 5"></label>' : ''}
-   <label class="f"><span>Mise en page</span><select data-o="template_id" data-num>${tpls.map(t => `<option value="${t.id}">${h(t.nom)}</option>`).join('')}</select></label>
-  </div></details>
-   <span id="saved" class="muted" aria-live="polite"></span>
- </div>
  <iframe id="pv" class="docsheet" title="${kindLabel(d)} : cliquez sur un texte pour le modifier"></iframe>
  ${isDevis ? `<section class="panel"><div class="ph"><h2>Photos et plans</h2><label class="btn">${icon('image', 16)}Ajouter<input type="file" id="dadd" accept="image/*" multiple hidden></label></div><div class="pb" id="dphs"><p class="muted">Chargement…</p></div></section>` : ''}
  ${isFac && !isAvoir ? `<section class="panel"><div class="ph"><h2>Règlements</h2><span class="amt">${eur(d.regle)} sur ${eur(d.total_ttc)}</span></div><div class="pb stack" style="gap:12px">
@@ -1665,7 +1859,7 @@ ${isMod ? `<a class="btn yellow" href="#/nouveau/${id}">${icon('mic')}Faire un d
 </div>`;
 
   if (isDevis) photosDevis(id);
-  let timer;
+  let timer, htimer;
   const drawGammes = () => {
     const gs = G(), el = $('#gammes');
     if (!el) return; // page quittée
@@ -1679,12 +1873,12 @@ ${isMod ? `<a class="btn yellow" href="#/nouveau/${id}">${icon('mic')}Faire un d
     d.data.gamme = +b.dataset.g; d.data.lignes = G()[d.data.gamme].lignes;
     zones(['lignes', 'totaux', 'mentions']); drawGammes(); save();
   };
-  const save = () => { $('#saved').textContent = 'Modifié…'; drawGammes(); clearTimeout(timer); timer = setTimeout(saveNow, 700); };
+  const save = () => { $('#saved').textContent = 'Modifié…'; drawGammes(); clearTimeout(timer); timer = setTimeout(saveNow, 700); clearTimeout(htimer); htimer = setTimeout(garder, 600); if ($('#undo')) $('#undo').disabled = false; };
   async function saveNow() {
     clearTimeout(timer);
     try {
       const nd = await api('documents/' + id, 'PUT', emise ? { template_id: d.template_id }
-        : { data: d.data, date: d.date, echeance: d.echeance, template_id: d.template_id, nom: d.nom, client_id: d.client_id });
+        : { data: d.data, date: d.date, echeance: d.echeance, template_id: d.template_id, nom: d.nom, client_id: d.client_id, ...(isDevis && { numero: d.numero }) });
       Object.assign(d, { client_id: nd.client_id, total_ttc: nd.total_ttc });
       if ($('#saved')) { $('#saved').textContent = 'Enregistré'; $('#subttc').textContent = eur(nd.total_ttc); } // la page a pu être quittée entre-temps
     } catch (e) { if ($('#saved')) $('#saved').textContent = e.message; else toast(e.message, 'crit'); }
@@ -1700,6 +1894,8 @@ ${isMod ? `<a class="btn yellow" href="#/nouveau/${id}">${icon('mic')}Faire un d
 
   // ----- Le document lui-même, modifiable en place (même rendu que le PDF) -----
   const pv = $('#pv'), L = () => d.data.lignes, NUM = ['qte', 'pu', 'tva'];
+  // Un seul taux de TVA pour tout le document (choisi dans Options) ; null = plusieurs taux
+  const tvaDoc = () => { const t = new Set(L().filter(l => l.type !== 'section').map(l => +l.tva)); return t.size === 1 ? [...t][0] : null; };
   const tplOf = () => tpls.find(t => t.id === d.template_id) || tpls.find(t => t.id === S.template_id) || tpls[0];
   const txt = el => el.innerText.replace(/\n$/, '');
   const toNum = s => +String(s).replace(/[\s€%]/g, '').replace(',', '.') || 0;
@@ -1710,6 +1906,18 @@ ${isMod ? `<a class="btn yellow" href="#/nouveau/${id}">${icon('mic')}Faire un d
     const ctx = docContext(d, S, { ...opts, edit: true, tpl: tplOf().html });
     for (const z of names) { const el = D().querySelector(`[data-zone="${z}"]`); if (el) el.outerHTML = ctx[z]; }
     if (focus) D().querySelector(focus)?.focus();
+    if ($('#tvadoc')) $('#tvadoc').value = tvaDoc() ?? '';
+    suivre();
+  };
+  // Retouches (colonnes alignées, logo/cachet déplacés) : pour tous les documents de cette mise en page, gardées dans les paramètres de l'entreprise
+  const R = () => ((S.retouches ||= {})[d.template_id ?? S.template_id] ||= {});
+  const majRetouches = () => { const doc = D(); doc.getElementById('kd-retouches')?.remove(); doc.head.insertAdjacentHTML('beforeend', retouches(retouchesDe(d, S))); };
+  const garderRetouches = () => api('settings', 'PUT', { retouches: S.retouches }).then(x => { S = x; }).catch(e => toast(e.message, 'crit'));
+  // totaux écrits ailleurs par le modèle ({{doc.total_ht}}, {{doc.total_ttc}}) et total HT tapé (lignes sans prix) : remis à jour sans redessiner
+  const suivre = () => {
+    const t = totaux(d.data, S.franchise_tva), doc = D();
+    for (const e of doc.querySelectorAll('[data-dt]')) e.textContent = eur(e.dataset.dt === 'ttc' ? t.ttc : t.ht);
+    for (const e of doc.querySelectorAll('[data-tht]')) if (e !== doc.activeElement) e.textContent = t.brut.toLocaleString('fr-FR', { minimumFractionDigits: 2, maximumFractionDigits: 2 });
   };
   pv.onload = () => {
     const doc = D(), fit = () => { pv.style.height = Math.ceil(doc.body.getBoundingClientRect().height) + 'px'; } // la feuille, pas la fenêtre (sinon la hauteur ne redescend jamais);
@@ -1719,6 +1927,24 @@ ${isMod ? `<a class="btn yellow" href="#/nouveau/${id}">${icon('mic')}Faire un d
     if (z < 1) doc.documentElement.style.zoom = z;
     new pv.contentWindow.ResizeObserver(fit).observe(doc.body); fit();
     if (emise) return;
+    doc.addEventListener('keydown', raccourci);
+    // Logo et cachet : glisser pour les déplacer (pour toute la mise en page), double-clic pour les remettre en place.
+    const IMG = 'img.logo, img.cachet, img.cachet-sign';
+    doc.querySelectorAll(IMG).forEach(i => { i.title = 'Glissez pour déplacer · double-clic pour remettre en place'; });
+    doc.addEventListener('pointerdown', e => {
+      const im = e.target.closest?.(IMG);
+      if (!im || e.button) return;
+      e.preventDefault();
+      const k = [...im.classList].find(c => ['logo', 'cachet', 'cachet-sign'].includes(c)), imgs = (R().img ||= {});
+      const p0 = { ...(imgs[k] || { x: 0, y: 0 }) }, x0 = e.clientX, y0 = e.clientY, zoom = +doc.documentElement.style.zoom || 1;
+      const move = ev => { imgs[k] = { x: Math.round(p0.x + (ev.clientX - x0) / zoom), y: Math.round(p0.y + (ev.clientY - y0) / zoom) }; majRetouches(); };
+      const fin = ev => { move(ev); doc.removeEventListener('pointermove', move); doc.removeEventListener('pointerup', fin); garderRetouches(); };
+      doc.addEventListener('pointermove', move); doc.addEventListener('pointerup', fin);
+    });
+    doc.addEventListener('dblclick', e => {
+      const im = e.target.closest?.(IMG), k = im && [...im.classList].find(c => ['logo', 'cachet', 'cachet-sign'].includes(c));
+      if (k && R().img?.[k]) { delete R().img[k]; majRetouches(); garderRetouches(); }
+    });
     // Suggestions pendant la frappe : prestations du catalogue (désignation d'une ligne), clients existants (nom du client).
     const sug = doc.createElement('div'); sug.className = 'kd-sug'; sug.hidden = true; doc.body.append(sug);
     let sugItems = [], sugSel = 0, sugEl = null;
@@ -1743,7 +1969,7 @@ ${isMod ? `<a class="btn yellow" href="#/nouveau/${id}">${icon('mic')}Faire un d
         for (const f of ['nom', 'email', 'tel', 'adresse', 'siret']) { d.data.client[f] = x.c[f] || ''; const z = doc.querySelector(`[data-f="data.client.${f}"]`); if (z) z.textContent = x.c[f] || ''; }
       } else {
         const l = L()[+el.dataset.i];
-        Object.assign(l, { designation: x.c.designation, description: l.description || x.c.description || '', unite: x.c.unite, pu: x.c.pu, tva: x.c.tva });
+        Object.assign(l, { designation: x.c.designation, description: l.description || x.c.description || '', unite: x.c.unite, pu: x.c.pu, tva: tvaDoc() ?? x.c.tva });
         zones(['lignes', 'totaux', 'mentions'], `[data-i="${el.dataset.i}"][data-k="qte"]`);
       }
       save();
@@ -1760,12 +1986,22 @@ ${isMod ? `<a class="btn yellow" href="#/nouveau/${id}">${icon('mic')}Faire un d
     doc.addEventListener('input', e => {
       const el = e.target, v = el.isContentEditable ? txt(el) : el.value;
       if (el.dataset.f) { setP(d, el.dataset.f, v); save(); return; }
+      // total HT tapé : la part des lignes sans prix = ce total − les lignes chiffrées
+      if (el.dataset.tht) { // lignes encore à 0 : elles passent « sans prix » (cases vides), le total tapé les couvre
+        const vides = L().filter(l => l.type !== 'section' && !sansPrix(l) && !montant(l));
+        vides.forEach(l => { l.pu = null; l.montant = null; });
+        if (vides.length) zones(['lignes']);
+        d.data.forfait_ht = r2(toNum(v) - totaux({ ...d.data, forfait_ht: 0 }).brut); suivre(); save(); return;
+      }
       if (!el.dataset.k) return;
       const k = el.dataset.k, l = L()[+el.dataset.i];
-      l[k] = NUM.includes(k) ? toNum(v) : v;
-      if (NUM.includes(k)) {
-        const t = D().querySelector(`[data-tot="${el.dataset.i}"]`);
-        if (t) t.textContent = eur(l.qte * l.pu);
+      // montant tapé = sans prix unitaire ; prix unitaire tapé = le montant se calcule ; les deux vidés = ligne sans prix
+      if (k === 'montant') Object.assign(l, { montant: v.trim() ? toNum(v) : null, pu: null });
+      else l[k] = k === 'pu' && !v.trim() ? null : NUM.includes(k) ? toNum(v) : v;
+      if (k === 'pu') l.montant = null;
+      if (NUM.includes(k) || k === 'montant') {
+        const t = D().querySelector(`[data-tot="${el.dataset.i}"]`), m = montant(l);
+        if (t && t !== D().activeElement) t.textContent = m === null ? '' : m.toLocaleString('fr-FR', { minimumFractionDigits: 2, maximumFractionDigits: 2 });
         zones(k === 'tva' ? ['totaux', 'mentions'] : ['totaux']);
       }
       save();
@@ -1773,17 +2009,30 @@ ${isMod ? `<a class="btn yellow" href="#/nouveau/${id}">${icon('mic')}Faire un d
     doc.addEventListener('focusout', e => {
       const el = e.target, k = el.dataset.k, next = selOf(e.relatedTarget);
       if (el.dataset.f === 'data.client.nom') {
-        const c = clients.find(c => c.nom.toLowerCase() === (d.data.client.nom || '').trim().toLowerCase());
+        const nom = (d.data.client.nom || '').trim(), c = clients.find(c => c.nom.toLowerCase() === nom.toLowerCase());
+        const avant = !c && nom && clients.find(x => x.id === d.client_id);
+        if (avant) { // nom changé sur la feuille : renommer la fiche du client (« Le Fournil » → « SARL Le Fournil »), ou c'est un autre client
+          modal({ title: 'Renommer le client ?', text: `« ${h(avant.nom)} » devient « ${h(nom)} » dans votre fichier clients.`, ok: 'Renommer le client', alt: 'C’est un autre client' }).then(async r => {
+            if (r?.alt) d.client_id = null;
+            else if (r) { await api('clients/' + avant.id, 'PUT', { nom }); avant.nom = nom; toast('Client renommé'); }
+            save(); // Annuler : le nom change sur ce document seulement
+          });
+          return;
+        }
         d.client_id = c?.id ?? null;
         if (c) for (const f of ['email', 'tel', 'adresse', 'siret']) if (!d.data.client[f] && c[f]) { d.data.client[f] = c[f]; doc.querySelector(`[data-f="data.client.${f}"]`).textContent = c[f]; }
         save();
       }
       if (k === 'designation') {
-        const l = L()[+el.dataset.i], c = l.type !== 'section' && !l.pu && cat.find(c => c.designation.toLowerCase() === l.designation.trim().toLowerCase());
-        if (c) { Object.assign(l, { description: l.description || c.description || '', unite: c.unite, pu: c.pu, tva: c.tva }); zones(['lignes', 'totaux', 'mentions'], next); save(); }
+        const l = L()[+el.dataset.i], c = l.type !== 'section' && l.pu === 0 && cat.find(c => c.designation.toLowerCase() === l.designation.trim().toLowerCase());
+        if (c) { Object.assign(l, { description: l.description || c.description || '', unite: c.unite, pu: c.pu, tva: tvaDoc() ?? c.tva }); zones(['lignes', 'totaux', 'mentions'], next); save(); }
       }
       // remet les nombres en forme et recalcule les sous-totaux (sauf si on clique un bouton de ligne, qui redessine lui-même)
-      if ((k === 'qte' || k === 'pu') && !e.relatedTarget?.closest?.('[data-act]')) zones(['lignes', 'totaux'], next);
+      if ((k === 'qte' || k === 'pu' || k === 'montant') && !e.relatedTarget?.closest?.('[data-act]')) zones(['lignes', 'totaux'], next);
+      if (el.dataset.tht) {
+        if (!L().some(sansPrix)) toast('Toutes les lignes ont un prix : videz le prix des lignes à mettre dans le prix global.', 'crit');
+        zones(['totaux', 'mentions'], next);
+      }
     });
     doc.addEventListener('keydown', e => {
       const el = e.target;
@@ -1798,9 +2047,12 @@ ${isMod ? `<a class="btn yellow" href="#/nouveau/${id}">${icon('mic')}Faire un d
       if (!b) return;
       const i = +b.dataset.i, a = b.dataset.act;
       let focus;
+      if (a === 'al') { // alignement d'une colonne, pour toute la mise en page
+        (R().align ||= {})[b.dataset.col] = b.dataset.al; majRetouches(); return garderRetouches();
+      }
       if (a === 'cat') {
         const l = L()[i];
-        cat.push(await api('catalog', 'POST', { designation: l.designation, description: l.description, unite: l.unite, pu: l.pu, tva: l.tva }));
+        cat.push(await api('catalog', 'POST', { designation: l.designation, description: l.description, unite: l.unite, pu: l.pu ?? r2((montant(l) || 0) / (+l.qte || 1)), tva: l.tva }));
         return toast(`« ${l.designation} » gardé dans le catalogue`);
       }
       if (a === 'del') L().splice(i, 1);
@@ -1808,13 +2060,18 @@ ${isMod ? `<a class="btn yellow" href="#/nouveau/${id}">${icon('mic')}Faire un d
       if (a === 'up' && i > 0) L().splice(i - 1, 0, ...L().splice(i, 1));
       if (a === 'down' && i < L().length - 1) L().splice(i + 1, 0, ...L().splice(i, 1));
       if (a === 'addL' || a === 'addS') {
-        L().push(a === 'addL' ? { type: 'ligne', designation: '', description: '', qte: 1, unite: 'u', pu: 0, tva: S.franchise_tva ? 0 : S.tva_defaut } : { type: 'section', designation: '' });
+        L().push(a === 'addL' ? { type: 'ligne', designation: '', description: '', qte: 1, unite: 'u', pu: L().some(sansPrix) ? null : 0, tva: S.franchise_tva ? 0 : tvaDoc() ?? S.tva_defaut } : { type: 'section', designation: '' }); // prix global : la nouvelle ligne est aussi sans prix
         focus = `[data-i="${L().length - 1}"][data-k="designation"]`;
       }
       zones(['lignes', 'totaux', 'mentions'], focus); save();
     });
   };
-  $$('[data-o]', view).forEach(el => {
+  const td = $('#tvadoc');
+  if (td) {
+    td.value = tvaDoc() ?? '';
+    td.onchange = () => { for (const ls of [L(), ...(G() || []).map(g => g.lignes)]) for (const l of ls) if (l.type !== 'section') l.tva = +td.value; zones(['lignes', 'totaux', 'mentions']); save(); };
+  }
+  $$('[data-o]').forEach(el => { // dans le panneau Options, en tête de page
     el.value = getP(d, el.dataset.o) ?? '';
     el.oninput = () => {
       setP(d, el.dataset.o, 'num' in el.dataset ? (el.value === '' ? null : +el.value) : el.value);
@@ -1833,6 +2090,8 @@ ${isMod ? `<a class="btn yellow" href="#/nouveau/${id}">${icon('mic')}Faire un d
     print: () => open(`/api/documents/${id}/html?print=1`),
     link: async () => { await navigator.clipboard.writeText(`${location.origin}/p/${d.token}`); toast('Lien copié'); },
     xml: () => open(`/api/documents/${id}/facturx.xml`),
+    docx: async () => { if (!emise) await saveNow(); location.href = `/api/documents/${id}/docx`; },
+    xlsx: async () => { if (!emise) await saveNow(); location.href = `/api/documents/${id}/xlsx`; },
     acompte: async () => {
       const v = await modal({ title: 'Facture d’acompte', text: 'Calculée sur le devis, taux de TVA par taux de TVA.', ok: 'Créer la facture', fields: [{ name: 'pct', label: 'Pourcentage de l’acompte', type: 'number', value: d.data.acompte_pct || S.acompte_defaut, step: 'any', required: true }] });
       if (v) location.hash = '#/doc/' + (await api(`documents/${id}/facture`, 'POST', { mode: 'acompte', pct: +v.pct })).id;
@@ -1884,6 +2143,36 @@ ${isMod ? `<a class="btn yellow" href="#/nouveau/${id}">${icon('mic')}Faire un d
     const b = e.target.closest('[data-delpay]');
     if (b && await confirmer('Supprimer ce règlement ?', '')) { await api('payments/' + b.dataset.delpay, 'DELETE'); route(); }
   });
+
+  // Ctrl Z / Ctrl Y : historique du document (lignes, textes, prix, options), une étape par pause de frappe.
+  // ponytail: retouches de mise en page (alignement, logo déplacé), renommage de fiche client et actions serveur ne s'annulent pas.
+  const etat = () => JSON.stringify({ data: d.data, date: d.date, echeance: d.echeance, template_id: d.template_id, nom: d.nom, client_id: d.client_id, numero: d.numero });
+  const hist = [etat()];
+  let pos = 0;
+  function garder() {
+    clearTimeout(htimer);
+    const e = etat();
+    if (e !== hist[pos]) { hist.splice(pos + 1, Infinity, e); pos++; if (hist.length > 100) { hist.shift(); pos--; } }
+    boutons();
+  }
+  const boutons = () => { if (!$('#undo')) return; $('#undo').disabled = !pos; $('#redo').disabled = pos >= hist.length - 1; };
+  function aller(sens) {
+    garder();
+    if (!hist[pos + sens]) return toast(sens < 0 ? 'Rien à annuler' : 'Rien à rétablir');
+    pos += sens; boutons();
+    Object.assign(d, JSON.parse(hist[pos]));
+    if (G()) d.data.lignes = G()[d.data.gamme].lignes; // même tableau que la gamme affichée
+    $$('[data-o]').forEach(el => { el.value = getP(d, el.dataset.o) ?? ''; });
+    if (td) td.value = tvaDoc() ?? '';
+    drawQs(); render(); save();
+  }
+  function raccourci(e) {
+    if (!pv.isConnected) return removeEventListener('keydown', raccourci); // page quittée
+    if (!(e.ctrlKey || e.metaKey) || document.querySelector('dialog[open]')) return;
+    const k = e.key.toLowerCase();
+    if (k === 'z' || k === 'y') { e.preventDefault(); aller(k === 'y' || e.shiftKey ? 1 : -1); }
+  }
+  if (!emise) { addEventListener('keydown', raccourci); $('#undo').onclick = () => aller(-1); $('#redo').onclick = () => aller(1); }
   drawQs(); drawGammes(); render();
 }
 
@@ -2308,7 +2597,7 @@ async function templates() {
   const zone = ME.kadra ? `<b>Importer votre propre modèle</b><br>
 <span class="ink2">Déposez votre devis actuel (photo, PDF ou fichier Excel) : l’IA reproduit sa mise en page et vos couleurs. Vous pourrez ensuite tout retoucher comme dans Word.</span>`
     : `<b>Gardez la présentation de vos devis actuels</b><br>
-<span class="ink2">Envoyez-nous le devis que vous utilisez aujourd’hui (Word, Excel, PDF ou photo) : l’équipe Kadra le reproduit à l’identique, avec vos couleurs et votre logo, et le met dans votre compte. Vous seul y avez accès. Service payant : nous vous contactons avec le tarif avant de commencer.</span>`;
+<span class="ink2">Envoyez-nous le devis que vous utilisez aujourd’hui (Word, Excel, PDF ou photo) : l’équipe Kadra le reproduit à l’identique, avec vos couleurs et votre logo, et le met dans votre compte. Vous seul y avez accès. Offert pendant le lancement de Kadra.</span>`;
   view.innerHTML = `<div class="stack"><label class="drop" id="drop">${icon('upload', 28)}<div style="flex:1;min-width:220px">${zone}<br><span id="st" class="muted" aria-live="polite"></span></div>
 <span class="btn">${ME.kadra ? 'Choisir un fichier' : 'Envoyer mon modèle'}</span><input type="file" id="file" class="sr" accept="${ME.kadra ? 'image/png,image/jpeg,image/webp,application/pdf,.xlsx,.html,.htm' : 'image/*,application/pdf,.xlsx,.xls,.ods,.docx,.doc,.odt'}"></label>
 ${demandes.length ? `<section class="panel"><div class="pb">${demandes.map(d => `<p style="margin:6px 0">${d.statut === 'faite' ? P('Prêt', 'good', 'check') : P('En cours chez Kadra', 'plan', 'clock')} ${h(d.nom)}, envoyé le ${dfr(d.created_at.slice(0, 10))}</p>`).join('')}</div></section>` : ''}
@@ -2371,7 +2660,7 @@ async function editTemplate(id) {
 <span class="grp">${B('bold', 'Gras', '<b>G</b>')}${B('italic', 'Italique', '<i>I</i>')}${B('underline', 'Souligné', '<u>S</u>')}</span>
 <label class="clr" title="Couleur du texte"><span>A</span><input type="color" id="fg" value="#1d1d1b" aria-label="Couleur du texte"></label>
 <span class="grp">${B('justifyLeft', 'Aligner à gauche', icon('alignL'))}${B('justifyCenter', 'Centrer', icon('alignC'))}${B('justifyRight', 'Aligner à droite', icon('alignR'))}</span>
-<span class="grp">${B('up', 'Monter le bloc sélectionné', icon('up'))}${B('down', 'Descendre le bloc sélectionné', icon('down'))}</span>
+<span class="grp">${B('up', 'Monter le bloc sélectionné', icon('up'))}${B('down', 'Descendre le bloc sélectionné', icon('down'))}${B('suppr', 'Supprimer le bloc sélectionné (touche Suppr)', icon('trash'))}${B('libre', 'Écrire mon propre texte à la place de la zone automatique (ou double-clic dessus)', icon('pencil'))}</span>
 <button type="button" id="img" title="Insérer une image ou un logo">${icon('image')}Image</button><input type="file" id="imgf" class="sr" accept="image/png,image/jpeg,image/webp">
 <label class="clr" id="imgw" hidden>Taille <input type="range" min="10" max="100" aria-label="Taille de l’image"></label>
 <select id="champ" aria-label="Insérer un champ"><option value="">Insérer un champ…</option>${Object.entries(ph).filter(([k]) => !['{css_base}', 'entreprise.couleur'].includes(k)).map(([k, l]) => `<option value="${h(k)}">${h(l.replace(/ \(HTML\)$/, ''))}</option>`).join('')}</select>
@@ -2443,8 +2732,10 @@ async function editTemplate(id) {
     rawHead = rawHead.replace(KD_MARGES, '') + `<style id="kd-marges">@page{margin:${v}mm}:root{--ed-marge:${v}mm}</style>`;
     d.head.innerHTML = remplir(rawHead) + ED_CSS;
   };
+  let zoneClic; // dernière zone automatique cliquée (un bloc peut en contenir plusieurs)
   d.addEventListener('click', e => {
     const atome = e.target.closest('img, [data-ph]');
+    zoneClic = atome?.matches('[data-ph]') ? atome : null;
     if (atome) { const r = d.createRange(); r.selectNode(atome); d.getSelection().removeAllRanges(); d.getSelection().addRange(r); }
     choisir(e.target.closest('img, div[data-ph], p, h1, h2, h3, h4, h5, h6, table, ul, ol, div'));
   });
@@ -2456,11 +2747,43 @@ async function editTemplate(id) {
     bloc.scrollIntoView({ block: 'nearest' });
   };
   const cmd = (c, v = null) => { fr.contentWindow.focus(); return d.execCommand(c, false, v); };
+  // comme Word : on retire tout le bloc encadré (zone automatique avec son cadre), Ctrl Z le remet.
+  // Pas execCommand('delete') : Chrome collerait le bloc suivant dans le précédent.
+  let annuler = []; // ce que Ctrl Z défait avant le navigateur (suppression de bloc, zone passée en texte libre)
+  const supprimer = () => {
+    if (!bloc) return toast('Cliquez d’abord sur le bloc à supprimer.');
+    const [n, p, apres] = [bloc, bloc.parentNode, bloc.nextSibling];
+    n.classList.remove('ed-sel'); n.remove();
+    annuler.push(() => p.insertBefore(n, apres?.parentNode === p ? apres : null));
+    bloc = null; $('#imgw').hidden = true; d.getSelection().removeAllRanges();
+  };
+  // Zone automatique → texte ordinaire, modifiable comme le reste ; elle ne se remplit plus à chaque devis.
+  const libre = async z => {
+    z ||= bloc?.matches('[data-ph]') ? bloc : bloc?.querySelectorAll('[data-ph]').length === 1 ? bloc.querySelector('[data-ph]') : null;
+    if (!z) return toast('Cliquez d’abord sur une zone en pointillé.');
+    if (!await modal({ title: 'Écrire votre propre texte ici ?', ok: 'Écrire mon texte',
+      text: `<b>${h(z.title.replace(/ : rempli automatiquement$/, ''))}</b> ne se remplira plus tout seul : le texte affiché devient du texte normal, que vous modifiez comme dans Word. Il sera <b>le même sur tous vos devis et factures</b> : un montant (acompte, TVA…) ne changera plus d’un devis à l’autre, pensez à l’enlever.` })) return;
+    const tok = z.dataset.ph, html = z.innerHTML, titre = z.title;
+    z.removeAttribute('data-ph'); z.removeAttribute('contenteditable'); z.removeAttribute('title');
+    annuler.push(() => { z.dataset.ph = tok; z.contentEditable = 'false'; z.title = titre; z.innerHTML = html; });
+    fr.contentWindow.focus();
+    const r = d.createRange(); r.selectNodeContents(z); r.collapse(false); d.getSelection().removeAllRanges(); d.getSelection().addRange(r);
+  };
+  d.addEventListener('dblclick', e => { const z = e.target.closest('[data-ph]'); if (z) { e.preventDefault(); libre(z); } });
+  d.addEventListener('input', () => { annuler = []; }); // on a tapé ensuite : Ctrl Z revient au navigateur
+  d.addEventListener('keydown', e => {
+    if ((e.ctrlKey || e.metaKey) && e.key.toLowerCase() === 'z' && !e.shiftKey && annuler.length) { e.preventDefault(); annuler.pop()(); return; }
+    if (e.key !== 'Delete' && e.key !== 'Backspace') return;
+    const s = d.getSelection(), r = s.rangeCount && s.getRangeAt(0);
+    const n = r && r.startContainer === r.endContainer && r.endOffset - r.startOffset === 1 && r.startContainer.childNodes[r.startOffset];
+    // une zone automatique ou une image sélectionnée (clic dessus) : on enlève le bloc entier, pas seulement la zone
+    if (bloc && n?.matches?.('img, [data-ph]') && bloc.contains(n)) { e.preventDefault(); supprimer(); }
+  });
   const bar = $('.wbar');
   bar.onmousedown = e => { if (e.target.closest('button')) e.preventDefault(); }; // garde la sélection dans la page
   bar.onclick = e => {
     const c = e.target.closest('[data-c]')?.dataset.c;
-    if (c === 'up' || c === 'down') bouger(c === 'up' ? -1 : 1); else if (c) cmd(c);
+    if (c === 'up' || c === 'down') bouger(c === 'up' ? -1 : 1); else if (c === 'suppr') supprimer(); else if (c === 'libre') libre(zoneClic && bloc?.contains(zoneClic) ? zoneClic : null); else if (c) cmd(c);
   };
   $('#police').onchange = e => { if (e.target.value) cmd('fontName', e.target.value); e.target.value = ''; };
   $('#taille').onchange = e => { if (e.target.value) cmd('fontSize', e.target.value); e.target.value = ''; };
@@ -2524,7 +2847,8 @@ async function parametres(tab = 'entreprise') {
     + imgChamp('logo', 'Logo', 'Placé en haut de chaque devis et facture, quelle que soit la mise en page.')
     + imgChamp('cachet', 'Cachet et signature', 'Photo de votre tampon signé, sur fond blanc : il s’ajoute dans la case « L’entreprise » de vos devis.'))
     + sec('Obligatoire sur vos devis et factures', F('siret', 'SIRET') + F('iban', 'IBAN (pour être payé par virement)')
-    + F('assurance', 'Assurance décennale', 'textarea', { rows: 2, hint: 'Assureur, n° de contrat, zone géographique couverte.', cls: 'wide' }))
+    + F('assurance', 'Assurance décennale', 'textarea', { rows: 2, hint: 'Assureur, n° de contrat, zone géographique couverte.', cls: 'wide' })
+    + F('mediateur', 'Médiateur de la consommation', 'textarea', { rows: 2, hint: 'Obligatoire si vous travaillez pour des particuliers : nom et site du médiateur auquel vous adhérez (ex. CM2C, www.cm2c.net). Il s’affiche sur leurs devis et factures.', cls: 'wide' }))
     + plus('Autres mentions (RCS, TVA intracommunautaire, BIC)', F('rcs', 'RCS ou RM') + F('tva_intra', 'N° de TVA intracommunautaire') + F('bic', 'BIC'));
   if (tab === 'documents') T.innerHTML = sec('TVA et délais', F('franchise_tva', 'Franchise en base de TVA (micro-entreprise)', 'checkbox') + F('tva_defaut', 'TVA par défaut (%)', 'number', { step: 'any' })
     + F('validite_jours', 'Validité des devis (jours)', 'number') + F('delai_paiement_jours', 'Délai de paiement (jours)', 'number') + F('acompte_defaut', 'Acompte par défaut (%)', 'number'))
@@ -3094,7 +3418,7 @@ async function pageImport() {
     const enCours = r.n.attente || r.n.lecture;
     const devis = r.docs.filter(d => d.type === 'devis'), facs = r.docs.filter(d => d.type !== 'devis');
     const gardes = r.docs.filter(d => choixImport[d.id] !== 'ignore'), cls = r.clients.filter(c => !clientsNon.has(c.cle));
-    const opts = d => (d.type === 'devis' ? [['envoye', 'En attente de réponse'], ['accepte', 'Signé'], ['refuse', 'Sans suite']] : d.type === 'avoir' ? [] : [['payee', 'Payée'], ['a_payer', 'Pas encore payée']]);
+    const opts = d => (d.type === 'devis' ? [['envoye', 'En attente de réponse'], ['accepte', 'Signé'], ['refuse', 'Sans suite'], ['brouillon', 'Brouillon']] : d.type === 'avoir' ? [] : [['payee', 'Payée'], ['a_payer', 'Pas encore payée']]);
     const ligne = d => {
       const c = choixImport[d.id] || d.defaut, ecart = d.ecart || Math.abs(d.ttc - d.ttc_calc) > 0.05, ign = c === 'ignore';
       return `<tr class="${ign ? 'off' : ''}"><td><span class="num">${h(d.numero || 'Sans numéro')}</span><small class="muted" style="display:block">${TYPE_IMP[d.type]}${d.date ? ' · ' + dfr(d.date) : ''}</small></td>
@@ -3144,7 +3468,7 @@ ${!total && !r.n.importe ? `<div class="empty">${icon('file', 28)}<p>Déposez vo
     if (b.id === 'boite') return busy(b, async () => { await api('imports/boite', 'POST'); tick(); });
     if (b.id === 'go') return busy(b, async () => {
       const r = await api('imports/valider', 'POST', { choix: choixImport, refuses: [...clientsNon] });
-      toast(`Dans Kadra : ${[r.devis && plural(r.devis, 'devis', 'devis'), r.factures && plural(r.factures, 'facture'), r.clients && plural(r.clients, 'nouveau client', 'nouveaux clients')].filter(Boolean).join(', ') || 'rien de nouveau'}`);
+      toast(`Dans Kadra : ${[r.devis && plural(r.devis, 'devis', 'devis'), r.factures && plural(r.factures, 'facture'), r.clients && plural(r.clients, 'nouveau client', 'nouveaux clients'), r.chantiers && plural(r.chantiers, 'chantier')].filter(Boolean).join(', ') || 'rien de nouveau'}`);
       if (r.sautes.length) toast(`Déjà dans Kadra, pas repris : ${r.sautes.join(', ')}`, 'crit');
       dernier = ''; tick();
     });

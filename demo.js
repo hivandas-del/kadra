@@ -6,6 +6,7 @@ import { DatabaseSync } from 'node:sqlite';
 import nodemailer from 'nodemailer';
 import { PDFDocument, StandardFonts } from 'pdf-lib';
 import { remplirDemo } from './demo-donnees.js';
+import { totaux } from './public/calc.js';
 
 const DB = (process.env.DB_FILE ||= 'demo.db'); // autre fichier = autre démo (ex. enregistrement de la vidéo), sans toucher demo.db
 process.env.PORT ||= '3001';
@@ -25,10 +26,28 @@ const hashPw = pw => { const salt = crypto.randomBytes(16).toString('hex'); retu
 
 const cid = ins('comptes', { settings: {} });
 const { S, C } = remplirDemo(db, cid, { url: URL });
-if (boite) db.prepare('UPDATE comptes SET settings=? WHERE id=?').run(JSON.stringify(Object.assign(S, { imap_host: boite.imap.host, imap_port: boite.imap.port, imap_user: boite.user, imap_pass: boite.pass })), cid);
+// Modèle DEVIS 015 (reproduit par Kadra, gardé dans demo-015.json, hors GitHub) : remis à chaque lancement, mise en page par défaut.
+try {
+  const m = JSON.parse(fs.readFileSync('demo-015.json', 'utf8'));
+  Object.assign(S, { template_id: ins('templates', { compte_id: cid, nom: m.nom, html: m.html, builtin: 0 }), logo: m.logo || S.logo, cachet: m.cachet || S.cachet });
+} catch (e) { if (e.code !== 'ENOENT') console.error('Modèle DEVIS 015 non repris :', e.message); }
+if (boite) Object.assign(S, { imap_host: boite.imap.host, imap_port: boite.imap.port, imap_user: boite.user, imap_pass: boite.pass });
+db.prepare('UPDATE comptes SET settings=? WHERE id=?').run(JSON.stringify(S), cid);
 ins('users', { compte_id: cid, email: 'demo@kadra.fr', nom: 'Mehmet Yildiz', hash: hashPw('demo1234'), role: 'admin', langue: 'fr-FR' });
 ins('users', { compte_id: cid, email: 'lea.garnier@example.com', nom: 'Léa Garnier', hash: hashPw('demo1234'), role: 'membre', langue: 'fr-FR' });
 ins('users', { compte_id: ins('comptes', { settings: { nom: 'Équipe Kadra' } }), email: 'equipe@kadra.fr', nom: 'Équipe Kadra', hash: hashPw('demo1234'), role: 'admin', langue: 'fr-FR' });
+// Compte SARL DAS (son devis Excel « DEVIS DAS 2026-79B » repris en mise en page + le devis lui-même), gardé dans demo-das.json (hors GitHub).
+try {
+  const j = JSON.parse(fs.readFileSync('demo-das.json', 'utf8')), dc = ins('comptes', { settings: {} });
+  const tpl = ins('templates', { compte_id: dc, nom: j.modele.nom, html: j.modele.html, builtin: 0 });
+  db.prepare('UPDATE comptes SET settings=? WHERE id=?').run(JSON.stringify({ ...j.entreprise, email: 'das@kadra.fr', template_id: tpl }), dc);
+  const cl = ins('clients', { compte_id: dc, ...j.client });
+  const t = totaux({ lignes: j.devis.lignes });
+  ins('documents', { compte_id: dc, type: 'devis', numero: j.devis.numero, client_id: cl, template_id: tpl, statut: 'brouillon', date: j.devis.date, echeance: j.devis.date,
+    total_ht: t.ht, total_ttc: t.ttc, token: crypto.randomBytes(24).toString('hex'),
+    data: { client: j.client, objet: j.devis.objet, adresse_chantier: j.devis.adresse_chantier, notes: '', lignes: j.devis.lignes } });
+  ins('users', { compte_id: dc, email: 'das@kadra.fr', nom: 'SARL DAS', hash: hashPw('demo1234'), role: 'admin', langue: 'fr-FR' });
+} catch (e) { if (e.code !== 'ENOENT') console.error('Compte SARL DAS non créé :', e.message); }
 
 // Nouveaux e-mails de clients déposés dans la boîte de test : à récupérer avec « Relever la boîte mail » (ou tout seuls dans les 10 min).
 if (boite) {
@@ -69,4 +88,4 @@ Jérôme Fabre`],
   console.log(`Boîte mail de test : 5 nouveaux e-mails de clients (relevés tout seuls, ou E-mails > Relever la boîte mail).
 Tout ce que Kadra envoie arrive ici : https://ethereal.email/login  ${boite.user} / ${boite.pass}`);
 }
-console.log(`Démo prête : ${URL}  (artisan : demo@kadra.fr / demo1234 ; équipe Kadra : equipe@kadra.fr / demo1234)`);
+console.log(`Démo prête : ${URL}  (artisan : demo@kadra.fr / demo1234 ; équipe Kadra : equipe@kadra.fr / demo1234 ; SARL DAS : das@kadra.fr / demo1234)`);

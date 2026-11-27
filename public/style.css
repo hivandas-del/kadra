@@ -37,10 +37,8 @@ a{color:var(--plan)}
 /* ---------- Coque ---------- */
 .shell{display:grid;grid-template-columns:248px minmax(0,1fr);min-height:100vh}
 .editor>*,.stack>*,.grid2>*{min-width:0}
-/* Menu : les lignes se resserrent selon la hauteur de l'écran (42 px → 29 px) pour tout voir sans défiler ; quadrillage de plan très léger */
-.side{color:#c3cce0;position:sticky;top:0;height:100vh;display:flex;flex-direction:column;padding:18px 14px 14px;overflow-y:auto;
-  background:linear-gradient(rgba(255,255,255,.028) 1px,transparent 1px) 0 0/22px 22px,linear-gradient(90deg,rgba(255,255,255,.028) 1px,transparent 1px) 0 0/22px 22px,
-  radial-gradient(140% 50% at 0 0,#1f3a7a 0,transparent 70%),var(--graphite)}
+/* Menu : les lignes se resserrent selon la hauteur de l'écran (42 px → 29 px) pour tout voir sans défiler ; fond en fondu, bleu plus clair en haut → bleu nuit plus foncé en bas */
+.side{color:#c3cce0;position:sticky;top:0;height:100vh;display:flex;flex-direction:column;padding:18px 14px 14px;overflow-y:auto;background:linear-gradient(180deg,#2b4683 0%,var(--graphite) 55%,#0c1529 100%)}
 .mark{display:flex;align-items:center;gap:10px;color:#fff;font-weight:800;font-size:19px;letter-spacing:-.02em;text-decoration:none;padding:0 10px;flex:none;margin-bottom:clamp(6px,2.2vh,20px)}
 .mark svg{width:34px;height:34px}
 .side .grp{font-size:12px;font-weight:700;letter-spacing:.06em;text-transform:uppercase;color:#8f9bb7;padding:0 12px 5px;flex:0 1 40px;min-height:22px;display:flex;align-items:flex-end}
@@ -73,6 +71,8 @@ a{color:var(--plan)}
 .voix{position:fixed;right:24px;bottom:24px;z-index:45;display:flex;align-items:center;gap:10px;height:60px;padding:0;border:0;border-radius:99px;background:var(--plan);color:#fff;font:inherit;font-size:15px;font-weight:700;cursor:pointer;box-shadow:0 10px 26px rgba(47,91,234,.32)}
 .voix:hover{background:var(--plan2)}
 .voix .o{width:60px;height:60px;flex:none;display:grid;place-items:center}
+.voix .t{margin-left:-10px;padding-right:24px;white-space:nowrap}
+body.ecoute .voix .t,body.reflechit .voix .t{display:none}
 .voix .l,.voix .r,.voix .ondes{display:none}
 .ondes{align-items:center;gap:3px;height:20px;margin-left:-10px}
 .ondes b{width:3px;height:100%;border-radius:2px;background:var(--plan);animation:onde 1s ease-in-out infinite}
@@ -151,6 +151,16 @@ table.list tr:last-child td{border-bottom:0}
 table.list tr[data-href],table.list tr[data-dep]{cursor:pointer}table.list tr[data-href]:hover td,table.list tr[data-dep]:hover td{background:#f5f7fb}
 .who{display:flex;align-items:center;gap:10px;min-width:0}.who b{font-weight:600;display:block}.who small{color:var(--muted);display:block}
 .num{font-weight:650}.amt{font-weight:700}
+/* titres de colonnes qui trient (Devis, Factures) ; sur téléphone (titres cachés) : liste « Trier » */
+th>button.tri{font:inherit;color:inherit;background:none;border:0;padding:0;cursor:pointer;text-transform:inherit;letter-spacing:inherit}
+th>button.tri:hover,th>button.tri.on{color:var(--ink)}th>button.tri:not(.on)::after{content:' ↕';opacity:.45}
+@media (min-width:901px){.tri-m{display:none}}
+th>button[data-fcli]::after{content:none!important}th>button[data-fcli].on{color:var(--metre)}#bcli.on{border-color:var(--metre);color:var(--metre)}
+.fcli{z-index:60;width:280px;max-width:calc(100vw - 16px);gap:6px}.fcli>input{margin:2px 2px 0}
+.fca{display:flex;gap:4px}.fca button{font:inherit;font-size:13px;border:0;background:none;color:var(--metre);cursor:pointer;padding:4px 6px;border-radius:6px}.fca button:hover{background:var(--beton)}
+.fcl{max-height:min(320px,55vh);overflow:auto;display:grid}
+.fcl label{display:flex;align-items:center;gap:10px;padding:8px;border-radius:7px;cursor:pointer;font-size:14px;text-transform:none;letter-spacing:0;color:var(--ink)}.fcl label:hover{background:var(--beton)}.fcl label[hidden]{display:none}
+.fcl input{width:16px;height:16px;flex:0 0 auto;margin:0;accent-color:var(--metre)}.fcl span{flex:1;min-width:0;overflow:hidden;text-overflow:ellipsis;white-space:nowrap}.fcl small{color:var(--muted)}
 table.docs .num{white-space:nowrap}table.docs td:first-child small{display:block;font-size:12.5px}
 
 .legend{display:flex;gap:16px;font-size:12.5px;color:var(--ink2);flex-wrap:wrap}
@@ -256,8 +266,7 @@ body.intro :is(.stack>*,.kpis>*,.chcards>*,.tgrid>*,.prog i){animation-play-stat
 .sech{display:flex;justify-content:space-between;align-items:center;margin-bottom:14px}.sech a{font-weight:700;text-decoration:none;color:var(--plan2)}
 
 /* ---------- Dictée ---------- */
-.studio{background:var(--graphite);color:#e6e9ec;border-radius:24px;padding:30px 28px 26px;position:relative;overflow:hidden;
-  background-image:linear-gradient(rgba(255,255,255,.035) 1px,transparent 1px),linear-gradient(90deg,rgba(255,255,255,.035) 1px,transparent 1px);background-size:28px 28px}
+.studio{background:var(--graphite);color:#e6e9ec;border-radius:24px;padding:30px 28px 26px;position:relative;overflow:hidden}
 .studio .row{display:flex;gap:12px;flex-wrap:wrap;justify-content:center}
 .studio .f>span{color:#a9b5cf}.studio select{background:var(--graphite2);color:#fff;border-color:var(--graphite3)}
 .micwrap{display:grid;justify-items:center;gap:14px;margin:26px 0 8px}
@@ -281,11 +290,14 @@ canvas.wave{width:min(520px,100%);height:56px;display:block}
 
 /* ---------- Fiche document : la feuille elle-même, modifiable en place ---------- */
 .docwrap{display:grid;gap:14px;max-width:1120px}
-.docbar{display:flex;flex-wrap:wrap;gap:12px;align-items:flex-end}.docbar .voice{flex:1 1 380px}
+/* TVA de tout le document, mise en évidence dans la rangée d'actions */
+.btn.tvabtn{background:var(--plan-t);color:var(--plan);font-weight:700;gap:6px;padding-right:10px}
+.tvabtn select{font:inherit;font-weight:800;color:var(--plan);background:#fff;border:0;border-radius:999px;padding:4px 8px;width:auto;cursor:pointer}
+#saved{font-size:14px;margin-left:6px}
 .gammes:not([hidden]){display:flex;flex-wrap:wrap;gap:8px 14px;align-items:center;min-width:0}.gammes .muted{font-size:13.5px}
 @media (max-width:560px){.ask>div{flex:1 1 calc(100% - 40px)!important}.ask>.btn{margin-left:32px}.gammes .seg{display:grid;grid-template-columns:repeat(3,1fr);width:100%;border-radius:18px}.gammes .seg button{flex-direction:column;gap:0;border-radius:15px;white-space:normal}}
 .docopts{position:relative}.docopts>summary{list-style:none}.docopts>summary::-webkit-details-marker{display:none}
-.docopts-in{position:absolute;right:0;top:calc(100% + 6px);z-index:5;background:#fff;border-radius:16px;box-shadow:var(--pop);padding:14px;display:flex;flex-wrap:wrap;gap:10px;align-items:flex-end;width:max-content;max-width:min(92vw,520px)}
+.docopts-in{position:absolute;left:0;top:calc(100% + 6px);z-index:5;background:#fff;border-radius:16px;box-shadow:var(--pop);padding:14px;display:flex;flex-wrap:wrap;gap:10px;align-items:flex-end;width:max-content;max-width:min(92vw,520px)}
 .docopts input{width:96px}.docopts select{width:auto}
 .docsheet{display:block;width:100%;min-height:700px;border:0;border-radius:24px;background:#e9edf4}
 
@@ -333,7 +345,10 @@ table.lines textarea{font-size:13px;color:var(--ink2);margin-top:4px;padding:5px
 
 /* Menu déroulant natif */
 details.menu{position:relative}details.menu>summary{list-style:none}details.menu>summary::-webkit-details-marker{display:none}
-details.menu .mp{position:absolute;right:0;top:calc(100% + 6px);z-index:20;background:var(--surface);border:1px solid var(--line);border-radius:12px;box-shadow:var(--pop);padding:6px;min-width:250px;display:grid}
+details.menu .mp,.ctxm{position:absolute;right:0;top:calc(100% + 6px);z-index:20;background:var(--surface);border:1px solid var(--line);border-radius:12px;box-shadow:var(--pop);padding:6px;min-width:250px;display:grid}
+.ctxm{position:fixed;right:auto;z-index:60}
+.ctxm button,.ctxm hr{all:unset}.ctxm button{font-size:14px;padding:9px 10px;border-radius:7px;cursor:pointer;color:var(--ink);display:flex;gap:10px;align-items:center}
+.ctxm button:hover,.ctxm button:focus-visible{background:var(--beton)}.ctxm hr{display:block;border-top:1px solid var(--line2);margin:5px 4px}.ctxm .danger{color:var(--crit)}
 details.menu .mp button,details.menu .mp a{font:inherit;font-size:14px;text-align:left;border:0;background:none;padding:9px 10px;border-radius:7px;cursor:pointer;color:var(--ink);text-decoration:none;display:flex;gap:10px;align-items:center}
 details.menu .mp button:hover,details.menu .mp a:hover{background:var(--beton)}
 details.menu .mp hr{border:0;border-top:1px solid var(--line2);margin:5px 4px}
@@ -680,6 +695,14 @@ details.plus[open]>summary::after{content:'–'}details.plus>.pb{padding-top:0}
 /* ---------- Installer l'appli ---------- */
 .side .inst{font:inherit;font-weight:600;border:1px dashed #3d5285;background:none;color:#c3cce0;cursor:pointer;display:flex;align-items:center;gap:11px;padding:0 12px;min-height:34px;border-radius:10px;margin-top:8px;flex:none}
 .side .inst:hover{color:#fff;background:var(--graphite2)}
+/* Raccourcis de l'accueil (téléphone seulement) : 4 boutons choisis + « Changer » */
+.racc{display:none}
+@media (max-width:900px){
+  .racc{display:grid;grid-template-columns:repeat(5,minmax(0,1fr));gap:8px;flex:none}
+  .racc button{display:grid;justify-items:center;align-content:start;gap:5px;background:var(--surface);border:0;border-radius:16px;padding:10px 4px 8px;font:inherit;font-size:11.5px;font-weight:600;line-height:1.2;color:var(--ink);box-shadow:var(--card);cursor:pointer;text-align:center}
+  .racc button svg{color:var(--plan)}
+  .racc .mod{background:none;box-shadow:none;color:var(--ink2)}.racc .mod svg{color:var(--ink2)}
+}
 .installer{display:flex;align-items:center;gap:12px;background:var(--graphite);color:#fff;border-radius:20px;padding:12px 10px 12px 14px}
 .installer>svg{width:38px;height:38px;flex:none}.installer div{flex:1;min-width:0}.installer b{display:block}.installer small{color:#b9c3da;font-size:13px}
 .installer .btn.ghost{color:#b9c3da}.installer .btn.ghost:hover{background:var(--graphite2)}
@@ -693,6 +716,8 @@ ol.etapes{margin:4px 0 8px;padding-left:22px;display:grid;gap:10px;line-height:1
   /* actions de la page : une seule ligne qui défile, l'action principale en premier */
   .top .tacts:not(:empty){flex-wrap:nowrap;overflow-x:auto;scrollbar-width:none;margin:0 -16px;padding:2px 16px 4px}
   .top .tacts::-webkit-scrollbar{display:none}.top .tacts .btn.primary{order:-1}.top .tacts .btn{flex:none}
+  /* la ligne défile (overflow) : le panneau Options s'ouvre en feuille au-dessus de la barre du bas */
+  .top .tacts .docopts-in{position:fixed;left:12px;right:12px;top:auto;bottom:calc(88px + env(safe-area-inset-bottom));width:auto;max-width:none;z-index:40}
   /* les 3 chiffres de l'accueil : un bandeau qui défile au lieu de 3 grandes cartes empilées */
   .kpis{display:flex;overflow-x:auto;scroll-snap-type:x mandatory;gap:12px;margin:0 -16px;padding:2px 16px 8px;scrollbar-width:none}
   .kpis::-webkit-scrollbar{display:none}
@@ -924,3 +949,29 @@ table.imp tr.off td{opacity:.45}table.imp select{max-width:190px}
 .mform ol.etapes{counter-reset:et;list-style:none;margin:0;padding:12px 14px;display:grid;gap:10px;background:var(--beton);border-radius:14px;font-size:14px;line-height:1.45}
 .mform ol.etapes li{counter-increment:et;display:grid;grid-template-columns:24px 1fr;gap:10px}
 .mform ol.etapes li::before{content:counter(et);width:24px;height:24px;border-radius:50%;background:var(--plan);color:#fff;font-weight:700;font-size:13px;display:grid;place-items:center}
+/* Teinte fixe par client (tirée du nom) : on le reconnaît avant de lire */
+.av.t0{background:#E6ECFF;color:#2F5BEA}.av.t1{background:#FFEDE3;color:#C2410C}.av.t2{background:#E3F5EA;color:#1F7A45}
+.av.t3{background:#F1E9FF;color:#7048C8}.av.t4{background:#FFF4D6;color:#8A5A00}.av.t5{background:#FDE8F1;color:#B4236A}
+.avw{position:relative;flex:none;display:inline-flex}
+.avw .suj{position:absolute;right:-4px;bottom:-4px;width:17px;height:17px;border-radius:50%;display:grid;place-items:center;background:var(--surface);color:var(--plan2);box-shadow:0 0 0 2px var(--surface)}
+.avw .suj.argent{color:var(--crit)}.avw .suj.facturer{color:var(--good)}
+/* Accueil : petit dessin sous chaque chiffre */
+.kpi .mini{display:block;width:100%;height:30px;margin-top:4px}
+.mbar{display:flex;gap:2px;height:7px;border-radius:99px;overflow:hidden;margin-top:7px;background:var(--line2)}.mbar i{display:block;min-width:4px}
+.mleg{display:flex;flex-wrap:wrap;gap:3px 12px;font-size:12px;color:var(--muted);margin-top:4px}
+.mleg i{display:inline-block;width:8px;height:8px;border-radius:3px;margin-right:5px}
+.kpi.fini .ki{color:var(--good)}
+@media (max-width:900px){.cockpit .kpis .kpi:not(.ca-an) :is(.mini,.mbar,.mleg){display:none}}
+/* Chantiers de l'accueil : dernière photo en vignette, avancement en anneau */
+.lig .vig{flex:none;width:46px;height:46px;border-radius:12px;object-fit:cover;background:var(--plan-t);color:var(--plan2);display:grid;place-items:center}
+.lig .t .pill{margin-top:4px}
+.ring{--p:0;flex:none;width:44px;height:44px;border-radius:50%;display:grid;place-items:center;font-size:11.5px;font-weight:800;font-variant-numeric:tabular-nums;
+  background:radial-gradient(closest-side,var(--surface) 74%,transparent 77%),conic-gradient(var(--rc,var(--plan)) calc(var(--p) * 1%),var(--line2) 0)}
+.ring.late{--rc:var(--warn)}
+/* Factures : où en est l'argent */
+.panel.argent{margin-top:18px;display:grid;gap:10px;padding:18px 22px}
+.argent .ah{display:flex;justify-content:space-between;gap:4px 12px;flex-wrap:wrap;align-items:baseline}.argent .ah small{color:var(--muted)}
+.abar{display:flex;gap:3px;height:14px;border-radius:99px;overflow:hidden}
+.abar button{border:0;padding:0;min-width:6px;cursor:pointer}.abar button:hover{filter:brightness(.9)}.abar button:focus-visible{outline:2px solid var(--ink);outline-offset:2px}
+.argent .mleg{font-size:13.5px;color:var(--ink2);gap:6px 18px}.argent .mleg b{color:var(--ink)}
+.mpaie{display:inline-flex;align-items:center;gap:6px;color:var(--ink2);white-space:nowrap}

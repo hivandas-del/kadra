@@ -2,13 +2,31 @@
 export const r2 = n => Math.round((+n || 0) * 100) / 100;
 export const eur = n => (+n || 0).toLocaleString('fr-FR', { style: 'currency', currency: 'EUR' });
 
+// Ligne sans prix (prix et montant vidés par l'artisan) : son prix est compris dans le prix global de la feuille, `data.forfait_ht`
+// (= total HT tapé − lignes chiffrées). Sert seulement s'il reste au moins une ligne sans prix.
+export const sansPrix = l => l.type !== 'section' && montant(l) === null;
+// Ligne restée vide (ni texte ni prix) : gardée dans la fiche pour écrire dedans, mais pas montrée au client (PDF, page client, Word, Excel).
+export const ligneVide = l => sansPrix(l) && !String(l.designation ?? '').trim() && !String(l.description ?? '').trim();
+// Montant HT d'une ligne : quantité × prix unitaire, sinon montant tapé directement (`l.montant`, prix unitaire vide) ; null = sans prix.
+const vide = v => v === null || v === '';
+export const montant = l => (!vide(l.pu) ? r2(l.qte * l.pu) : l.montant != null && !vide(l.montant) ? r2(l.montant) : null);
+// Lignes qui comptent dans les calculs (qte × pu) : lignes chiffrées, montants tapés (en « 1 forfait »), + une ligne « prix global » pour celles sans prix.
+// ponytail: le prix global prend la TVA de la 1re ligne sans prix (une feuille sans prix à deux taux de TVA n'est pas gérée) ;
+// un montant tapé passe en « 1 forfait » dans le Factur-X (la quantité écrite sur la feuille n'y est pas reprise).
+export function lignesCalc(data) {
+  const ls = (data.lignes || []).filter(l => l.type !== 'section'), sp = ls.filter(sansPrix);
+  const chiffrees = ls.filter(l => !sansPrix(l)).map(l => (vide(l.pu) ? { ...l, qte: 1, unite: 'forfait', pu: montant(l) } : l));
+  if (!sp.length) return chiffrees;
+  const f = { type: 'ligne', designation: 'Ensemble des travaux (prix global)', description: sp.map(l => l.designation).filter(Boolean).join('\n'), qte: 1, unite: 'forfait', pu: r2(data.forfait_ht), tva: sp[0].tva };
+  return [...chiffrees, ...(f.pu ? [f] : [])];
+}
+
 // Totaux d'un document. La remise globale (%) ne s'applique pas aux lignes `hors_remise` (déductions d'acompte).
 export function totaux(data, franchise = false) {
   const k = 1 - (+data.remise_pct || 0) / 100;
   const parTaux = {};
   let brut = 0;
-  for (const l of data.lignes || []) {
-    if (l.type === 'section') continue;
+  for (const l of lignesCalc(data)) {
     const m = r2(l.qte * l.pu);
     brut += m;
     const t = franchise ? 0 : +l.tva || 0;

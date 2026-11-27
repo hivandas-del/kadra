@@ -8,10 +8,11 @@ import { DatabaseSync } from 'node:sqlite';
 import Anthropic from '@anthropic-ai/sdk';
 import nodemailer from 'nodemailer';
 import { ImapFlow } from 'imapflow';
-import { totaux, lignesAcompte, lignesSolde, lignesSituation, r2, eur, CATEGORIES, ecritures } from './public/calc.js';
-import { renderDoc, docContext, partialJSON, BUILTINS, SAMPLE, PLACEHOLDERS } from './templates.js';
-import { htmlToPdf, htmlToPng, ciiXml, facturx, pdfImages } from './pdf.js';
-import { xlsxToHtml, docxTexte, zipImages } from './xlsx.js';
+import { totaux, sansPrix, lignesAcompte, lignesSolde, lignesSituation, r2, eur, CATEGORIES, ecritures } from './public/calc.js';
+import { renderDoc, docContext, partialJSON, BUILTINS, SAMPLE, PLACEHOLDERS, particulier } from './templates.js';
+import { htmlToPdf, htmlToPng, ciiXml, facturx, pdfImages, pdfTexte } from './pdf.js';
+import { docWord, docExcel } from './office.js';
+import { classeurHtml, docxTexte, zipImages } from './xlsx.js';
 import { extraire } from './public/i18n.js';
 import { remplirDemo } from './demo-donnees.js';
 
@@ -109,7 +110,7 @@ const run = (sql, ...p) => db.prepare(sql).run(...p);
 function parseRow(r) { if (r && typeof r.data === 'string') r = { ...r, data: JSON.parse(r.data) }; return r && { ...r }; }
 
 const DEFAULT_SETTINGS = {
-  nom: 'Mon entreprise', adresse: '', siret: '', rcs: '', tva_intra: '', tel: '', email: '', site: '', assurance: '', iban: '', bic: '', logo: '', cachet: '',
+  nom: 'Mon entreprise', adresse: '', siret: '', rcs: '', tva_intra: '', tel: '', email: '', site: '', assurance: '', mediateur: '', iban: '', bic: '', logo: '', cachet: '',
   couleur: '#2f5bea', franchise_tva: false, tva_defaut: 10, validite_jours: 30, delai_paiement_jours: 30, acompte_defaut: 30, langue: 'fr-FR', template_id: 1,
   categorie_operation: 'prestation de services', tva_debits: false, acompte_auto: false, stripe_secret: '', stripe_webhook_secret: '',
   conditions_paiement: '30 % d’acompte à la signature, solde à réception de la facture de fin de travaux.',
@@ -171,12 +172,14 @@ const VIEWS = {
     CASE WHEN d.type='facture' AND d.kind!='avoir' THEN ROUND(d.total_ttc * COALESCE(json_extract(d.data, '$.retenue_pct'), 0) / 100, 2) ELSE 0 END retenue,
     (SELECT numero FROM documents pa WHERE pa.id=d.parent_id) parent_numero,
     (SELECT COALESCE(SUM(montant),0) FROM payments p WHERE p.document_id=d.id) paye,
+    (SELECT mode FROM payments p WHERE p.document_id=d.id ORDER BY p.date DESC, p.id DESC LIMIT 1) mode_paie,
     (SELECT COALESCE(SUM(-a.total_ttc),0) FROM documents a WHERE a.parent_id=d.id AND a.kind='avoir' AND a.numero IS NOT NULL) avoirs
     FROM documents d LEFT JOIN clients c ON c.id=d.client_id) x`,
   chantiers: `SELECT ch.*, c.nom client_nom, c.email client_email, dv.numero devis_numero, COALESCE(dv.total_ttc,0) budget, COALESCE(dv.total_ht,0) budget_ht,
     (SELECT COALESCE(ROUND(SUM(x.ttc - x.tva), 2),0) FROM depenses x WHERE x.chantier_id=ch.id) depenses,
     (SELECT COALESCE(SUM(total_ttc),0) FROM documents f WHERE f.type='facture' AND f.kind!='avoir' AND f.numero IS NOT NULL AND f.chantier_id=ch.id) facture,
-    (SELECT COALESCE(SUM(p.montant),0) FROM payments p JOIN documents f ON f.id=p.document_id WHERE f.chantier_id=ch.id) encaisse
+    (SELECT COALESCE(SUM(p.montant),0) FROM payments p JOIN documents f ON f.id=p.document_id WHERE f.chantier_id=ch.id) encaisse,
+    (SELECT ph.id FROM photos ph WHERE ph.chantier_id=ch.id ORDER BY ph.id DESC LIMIT 1) photo_id
     FROM chantiers ch LEFT JOIN clients c ON c.id=ch.client_id LEFT JOIN documents dv ON dv.id=ch.devis_id`,
   rdv: `SELECT r.*, c.nom client_nom, c.tel client_tel, ch.nom chantier_nom, (SELECT sujet FROM emails e WHERE e.id=r.email_id) email_sujet
     FROM rdv r LEFT JOIN clients c ON c.id=r.client_id LEFT JOIN chantiers ch ON ch.id=r.chantier_id`,
@@ -288,6 +291,13 @@ function update(t, id, body, cid) {
   if (t === 'depenses') checkDepense(row);
   if (t === 'notes' && 'texte' in row && !String(row.texte || '').trim()) throw httpErr(400, 'La note est vide.');
   if (t === 'photos') delete row.image; // une photo ne se remplace pas : on la supprime
+  // Numéro d'un devis : modifiable par l'artisan (pas celui d'une facture : suite chronologique sans trou, attribuée à l'émission).
+  if (t === 'documents' && old.type === 'devis' && body.numero != null && String(body.numero).trim() !== old.numero) {
+    const n = String(body.numero).trim().slice(0, 40);
+    if (!n) throw httpErr(400, 'Le numéro du devis ne peut pas être vide.');
+    if (get('SELECT 1 FROM documents WHERE compte_id=? AND numero=? AND id<>?', cid, n, id)) throw httpErr(400, `Le numéro ${n} est déjà pris par un autre document.`);
+    row.numero = n;
+  }
   // Facture émise : contenu figé (seule la mise en page peut changer) ; on corrige par un avoir.
   if (t === 'documents' && old.type === 'facture' && old.numero && Object.keys(row).some(k => k !== 'template_id' && !(k === 'statut' && row.statut !== 'brouillon')))
     throw httpErr(400, 'Facture émise : modification impossible, créez un avoir.');
@@ -411,6 +421,11 @@ const smtpDe = host => ({ 'imap.mail.me.com': ['smtp.mail.me.com', 587], 'imap.e
   || (/^imap\./.test(host) ? [host.replace(/^imap\./, 'smtp.'), 465] : null);
 const imapOpts = s => ({ host: s.imap_host, port: +s.imap_port || 993, secure: +s.imap_port !== 143, auth: { user: s.imap_user, pass: s.imap_pass }, logger: false });
 const nomPj = x => String(x.dispositionParameters?.filename || x.parameters?.name || '');
+// Pub, lettre d'information, liste de diffusion, envoi automatique : jamais dans Kadra, même venant de l'adresse d'un client.
+// ponytail: d'après les en-têtes posés par les outils d'envoi en masse et les adresses « ne pas répondre » ; une pub sans ces en-têtes passerait, mais seulement si elle vient d'un client.
+const ENTETES_PUB = ['list-unsubscribe', 'list-id', 'precedence', 'auto-submitted'];
+const estPub = m => /^(list-unsubscribe|list-id):|^precedence:\s*(bulk|list|junk)|^auto-submitted:\s*auto-generated/im.test(m.headers?.toString() || '')
+  || /^(no-?reply|ne-?pas-?repondre|newsletters?|marketing|promo)[^@]*@/i.test(m.envelope?.from?.[0]?.address || '');
 async function releverBoite(cid) {
   const s = settings(cid);
   if (!s.imap_host || !s.imap_user || !s.imap_pass || enCours.has(cid)) return 0;
@@ -431,11 +446,11 @@ async function releverBoite(cid) {
         const uids = ((await imap.search(dernier ? { uid: `${dernier + 1}:*` } : { since: new Date(Date.now() - 90 * 864e5) }, { uid: true })) || []).filter(u => u > dernier);
         const trouves = [];
         let max = dernier;
-        if (uids.length) for await (const m of imap.fetch(uids, { uid: true, envelope: true, bodyStructure: true }, { uid: true })) {
+        if (uids.length) for await (const m of imap.fetch(uids, { uid: true, envelope: true, bodyStructure: true, headers: ENTETES_PUB }, { uid: true })) {
           max = Math.max(max, m.uid);
           const de = (m.envelope.from?.[0]?.address || '').toLowerCase(), a = [...(m.envelope.to || []), ...(m.envelope.cc || [])].map(x => (x.address || '').toLowerCase());
           const client = clients.get(recu ? de : a.find(x => clients.has(x)));
-          if (client) trouves.push({ m, de, a, client });
+          if (client && !(recu && estPub(m))) trouves.push({ m, de, a, client });
         }
         for (const { m, de, a, client } of trouves) { // téléchargements après la boucle fetch (imapflow n'accepte pas de commande pendant un fetch)
           const part = m.bodyStructure && (textPart(m.bodyStructure) || textPart(m.bodyStructure, 'text/html'));
@@ -601,7 +616,8 @@ async function askCompte(cfg, system, prompt, schema, fichier, onPartial, opts) 
   const args = ['-p', '--output-format', onPartial ? 'stream-json' : 'json', ...(onPartial ? ['--verbose', '--include-partial-messages'] : []),
     '--no-session-persistence', '--strict-mcp-config', '--setting-sources', '',
     '--system-prompt', system, '--json-schema', JSON.stringify(schema), '--tools', fichier ? 'Read' : '', ...(fichier ? ['--allowedTools', 'Read'] : []),
-    ...(process.env.CLAUDE_MODEL ? ['--model', process.env.CLAUDE_MODEL] : opts.modele ? ['--model', opts.modele] : opts.rapide ? ['--model', 'sonnet', '--effort', 'low'] : [])];
+    ...(process.env.CLAUDE_MODEL ? ['--model', process.env.CLAUDE_MODEL] : opts.modele ? ['--model', opts.modele] : opts.rapide ? ['--model', 'sonnet'] : []),
+    ...(opts.rapide && !process.env.CLAUDE_MODEL ? ['--effort', 'low'] : [])];
   const p = prendreClaude(args, opts.chaud && !fichier, cfg), dir = p.dir;
   if (fichier) {
     const noms = [].concat(fichier).map((f, i) => {
@@ -643,6 +659,8 @@ ${prompt}`;
       if (p.erreur) p.emit('error', p.erreur);
       p.stdin.end(prompt);
     });
+    const u = out.usage; // jetons de l'appel, pour suivre ce que l'IA consomme
+    if (u) console.log(`IA Claude Code ${args[args.indexOf('--model') + 1] || 'par défaut'} : ${u.input_tokens + (u.cache_read_input_tokens || 0) + (u.cache_creation_input_tokens || 0)} entrée, ${u.output_tokens} sortie${out.total_cost_usd ? ` (≈ ${out.total_cost_usd.toFixed(3)} $ au prix de l'API)` : ''}`);
     if (out.is_error || !out.structured_output) {
       const msg = String(out.result || out.subtype || '');
       if (/login|log in|auth|api key/i.test(msg)) throw httpErr(503, 'Compte Claude non connecté : lancez « claude » dans un terminal puis /login.');
@@ -991,7 +1009,7 @@ async function aiTemplate({ file, nom, source }, cid) {
   let [, type, data] = m, grille = '';
   // Excel : on reconstruit la feuille en HTML, Claude reçoit la grille (structure exacte) et sa capture (rendu).
   if (Buffer.from(data.slice(0, 8), 'base64').readUInt32LE(0) === 0x04034b50) {
-    grille = xlsxToHtml(Buffer.from(data, 'base64'));
+    grille = classeurHtml(Buffer.from(data, 'base64'));
     const png = await htmlToPng(grille).catch(() => null); // sans Chrome : la grille seule suffit
     [type, data] = png ? ['image/png', png.toString('base64')] : [null, null];
   } else if (!/^(application\/pdf|image\/(png|jpeg|webp|gif))$/.test(type)) throw httpErr(400, 'Formats acceptés : PDF, image (PNG, JPEG, WebP) ou Excel (.xlsx).');
@@ -1012,6 +1030,12 @@ Chaque cellule porte la classe de sa colonne (th.c-pu, td.c-designation…) ; le
 {{{logo}}} est une <img class="logo"> : règle sa taille avec img.logo{…} et ne donne pas la classe « logo » à un autre élément.
 {{{cachet}}} est une <img class="cachet"> (tampon et signature de l'entreprise) : si le document en montre un, place {{{cachet}}} au même endroit et règle sa taille avec img.cachet{…} ; sinon ne le mets pas.
 Un grand total mis en valeur (bandeau, encadré) utilise {{doc.total_ttc}}.
+Avant d'écrire, repère sur l'original chaque zone de données et remplace-la par sa balise, à la même place, avec les mêmes libellés autour :
+- le destinataire (« Client », « Destinataire », « Facturé à », « Adressé à », « M. / Mme … », nom de société) : son nom → {{client.nom}}, son adresse (toutes ses lignes, jamais le nom seul) → {{client.adresse}}, et s'ils ont une place : {{client.tel}}, {{client.email}}, {{client.siret}} ; ou tout le bloc → {{{bloc_client}}} ;
+- l'adresse des travaux (« Adresse du chantier », « Lieu des travaux », « Lieu d'intervention », « Chantier ») → {{doc.adresse_chantier}} ; l'objet ou la nature des travaux → {{doc.objet}} ;
+- titre, numéro, date, validité ou échéance → {{doc.titre}}, {{doc.numero}}, {{doc.date}}, {{doc.echeance}} ;
+- les coordonnées de l'artisan (en-tête, bloc émetteur, pied de page) → {{entreprise.x}} ou {{{bloc_entreprise}}}, jamais confondues avec celles du client.
+Aucune de ces zones ne disparaît et aucune donnée de l'original n'y reste en dur.
 Commence le <style> par {{{css_base}}}. Le texte fixe (titres, libellés, conditions, pied de page) est gardé tel quel ; les données d'exemple (client, lignes, montants, dates, numéros, taux et montant d'acompte, coordonnées) deviennent des balises ou disparaissent ({{{mentions}}} donne déjà l'acompte et les mentions légales).
 Pour une feuille Excel : ne recopie pas la grille du tableur (pas de quadrillage, pas de colonnes fixes) ; retrouve les blocs du devis et reproduis leur place, leur ordre, leurs couleurs, leurs bordures et leurs polices.
 Aucun JavaScript, aucune ressource externe (polices système uniquement). nom = nom court du gabarit.`;
@@ -1029,7 +1053,8 @@ logo = nom de l'image (ex. « image1 ») qui est le logo de l'entreprise ; cache
   const rendu = await htmlToPng(stripScripts(renderDoc({ ...SAMPLE, compte_id: cid }, s, out.html))).catch(() => null);
   if (rendu) {
     out = await askClaude(system, [xl, `Fichiers : ${original ? '« original » = le document d’origine ; ' : ''}« rendu » = ton gabarit ci-dessous, rempli avec des données d'exemple (elles diffèrent de l'original, c'est normal).
-Compare les mises en page et corrige tous les écarts : place et taille des blocs, colonnes du tableau et leurs intitulés, alignements, couleurs, bordures, polices, totaux, pied de page, logo. Renvoie le gabarit complet corrigé.
+Compare les mises en page et corrige tous les écarts : place et taille des blocs, colonnes du tableau et leurs intitulés, alignements, couleurs, bordures, polices, totaux, pied de page, logo.
+Vérifie aussi que chaque zone de données de l'original a sa balise au même endroit : nom et adresse du client, adresse du chantier, objet, numéro, dates. Renvoie le gabarit complet corrigé.
 
 Gabarit actuel :
 ${out.html}`].filter(Boolean).join('\n\n'), TEMPLATE_SCHEMA, [original, { type: 'image/png', data: rendu.toString('base64'), nom: 'rendu' }].filter(Boolean)).catch(() => out);
@@ -1101,7 +1126,7 @@ function faitAujourdhui(cid) {
   const t = today(), iso = s => (s.includes('T') ? s : s.replace(' ', 'T') + 'Z'), out = [];
   for (const d of all(`SELECT * FROM (${scoped('documents', cid)}) WHERE derniere_relance >= ? OR signe_le >= ?`, t, t)) {
     const qui = d.data.client?.nom || d.client_nom || 'le client';
-    if (d.derniere_relance >= t) out.push({ at: iso(d.derniere_relance), k: 'relance', href: '#/doc/' + d.id, t: `Relance envoyée à ${qui}`,
+    if (d.relances > 0 && d.derniere_relance >= t) out.push({ at: iso(d.derniere_relance), k: 'relance', // relances 0 = date posée par l'import, pas une relance href: '#/doc/' + d.id, t: `Relance envoyée à ${qui}`,
       s: d.type === 'facture' ? `Facture ${d.numero}, ${eur(d.total_ttc - d.regle)} à payer (${d.relances === 1 ? '1re' : d.relances + 'e'} relance)` : `Devis ${d.numero} sans réponse` });
     if (d.signe_le >= t) out.push({ at: iso(d.signe_le), k: 'ok', href: '#/doc/' + d.id, t: `Devis signé par ${d.signe_par || qui}`, s: `${d.numero}, ${eur(d.total_ttc)} TTC · chantier créé` });
   }
@@ -1430,18 +1455,20 @@ on('POST', '/api/ai/ticket', async ({ body }) => {
 // Les factures gardent leur numéro d'origine (archivage légal dans l'ancien logiciel) et sont figées comme les autres.
 const AAAAMMJJ = /^\d{4}-\d{2}-\d{2}$/;
 const IMPORT_SCHEMA = S({ type: { type: 'string', enum: ['devis', 'facture', 'acompte', 'avoir', 'autre'] }, numero: str, date: str, echeance: str,
-  client: S({ nom: str, adresse: str, email: str, tel: str }), objet: str, adresse_chantier: str, lignes: DEVIS_SCHEMA.properties.lignes,
+  client: S({ nom: str, adresse: str, email: str, tel: str, siret: str }), objet: str, adresse_chantier: str, lignes: DEVIS_SCHEMA.properties.lignes,
   remise_pct: num, total_ht: num, total_ttc: num, signe: { type: 'boolean' }, paye: { type: 'boolean' } });
 const importSystem = s => `Tu lis d'anciens devis ou d'anciennes factures d'un artisan du bâtiment en France (PDF ou photo), faits avec son ancien logiciel, Word ou Excel, pour les recopier tels quels dans son nouveau logiciel.${s.nom && s.nom !== DEFAULT_SETTINGS.nom ? ` Son entreprise : ${s.nom}${s.siret ? `, SIRET ${s.siret}` : ''}.` : ''}
 Pour chaque document (chacun séparément, sans rien mélanger entre eux), rends :
 - type : devis ; facture ; acompte (facture d'acompte) ; avoir ; autre (tout le reste : facture d'un fournisseur ou d'une autre entreprise adressée à l'artisan, bon de commande, plan, document illisible…).
 - numero : le numéro du document, recopié exactement (chaîne vide s'il n'y en a pas).
 - date ; echeance (fin de validité du devis, ou échéance de paiement de la facture) : AAAA-MM-JJ, chaîne vide si absente.
-- client : le destinataire du document (nom tel qu'écrit avec la civilité ; adresse « rue\\ncode postal ville » ; e-mail et téléphone seulement s'ils sont écrits). Jamais les coordonnées de l'artisan.
-- objet : l'objet ou le titre des travaux ; adresse_chantier : seulement si elle est écrite et différente de l'adresse du client.
+Repère d'abord les zones du document. L'artisan, c'est l'en-tête avec le logo, le bloc « émetteur » et le pied de page (SIRET, IBAN, capital, APE, assurance) : jamais le client. Le client, c'est le destinataire, souvent en haut à droite ou dans un cadre, sous « Client », « Destinataire », « Facturé à », « Adressé à », « Maître d'ouvrage », « M. / Mme … » ou un nom de société.
+- client : nom tel qu'écrit, avec la civilité (société : sa raison sociale) ; adresse complète « rue\\ncode postal ville » (toutes les lignes, complément compris) ; e-mail, téléphone et SIRET (client professionnel, 14 chiffres) seulement s'ils sont écrits dans son bloc.
+- objet : l'objet ou le titre des travaux (« Objet », « Désignation des travaux », « Nature des travaux », titre au-dessus du tableau).
+- adresse_chantier : l'adresse où se font les travaux, sous « Adresse du chantier », « Lieu des travaux », « Lieu d'intervention », « Adresse des travaux », « Chantier : », ou écrite dans l'objet (« Rénovation SDB – 12 rue… ») ; format « rue\\ncode postal ville ». Seulement si elle est écrite et différente de l'adresse du client.
 - lignes : toutes les lignes, dans l'ordre, recopiées mot pour mot (désignation, description, quantité, unité, prix unitaire HT, taux de TVA en %). Un titre de lot ou de partie = type « section » (les autres champs vides ou 0). Une ligne de sous-total, de total ou de report n'est pas une ligne. Avoir : prix unitaires négatifs.
 - remise_pct : remise globale en %, sinon 0.
-- total_ht, total_ttc : les totaux écrits sur le document (négatifs pour un avoir).
+- total_ht, total_ttc : les totaux écrits sur le document (négatifs pour un avoir). Aucune TVA sur le document : total_ttc = total_ht.
 - signe : devis signé par le client ou avec « bon pour accord » rempli. paye : facture marquée acquittée, payée ou réglée, sans reste à payer.
 N'invente rien : un montant illisible vaut 0, un texte illisible est vide.`;
 // PDF, photo, Word (.docx) ou Excel (.xlsx) : Word et Excel sont donnés à Claude en texte
@@ -1476,21 +1503,39 @@ function ajouterImport(cid, { nom, fichier, source = 'fichier', email_a = '' }) 
 const LOT = 4, LOT_TAILLE = 15e6, LECTEURS = 5;
 const IMPORT_LOT = S({ docs: { type: 'array', items: S({ fichier: str, ...IMPORT_SCHEMA.properties }) } });
 const LIMITE = e => [503, 429].includes(e.status);
-async function lireLot(s, lot) {
-  const fichiers = [], textes = [], t0 = Date.now();
-  lot.forEach((i, k) => {
-    const m = FICHIER_IMPORT.exec(i.fichier), nom = `doc${k + 1}`, b = () => Buffer.from(m[2], 'base64');
-    const texte = m[1] === DOCX ? `Document Word (texte ; tableaux : une ligne par rangée, cellules séparées par « | ») :\n${docxTexte(b())}`
-      : m[1] === XLSX ? `Feuille Excel (tableau HTML) :\n${xlsxToHtml(b()).replace(/<style[\s\S]*?<\/style>|\s(style|class)="[^"]*"/g, '')}` : '';
-    if (texte) textes.push(`--- ${nom} ---\n${texte.slice(0, 80000)}`);
-    else fichiers.push({ type: m[1], data: m[2], nom });
-  });
-  const consigne = `${lot.length > 1 ? `${lot.length} documents, à lire chacun séparément` : '1 document'} : ${lot.map((i, k) => `doc${k + 1} (fichier d'origine « ${i.nom} »)`).join(', ')}.
-${fichiers.length > 1 ? 'Ouvre tous les fichiers en une seule fois. ' : ''}Rends un élément de docs par document, avec fichier = doc1, doc2… Aujourd'hui : ${today()}.${textes.length ? '\n\n' + textes.join('\n\n') : ''}`;
-  const { docs } = await askClaude(importSystem(s), consigne, IMPORT_LOT, fichiers.length ? fichiers : undefined, null, { rapide: true });
+// Moins de jetons : Word, Excel et PDF (texte lu sur le PC) partent en texte, lus par Haiku (20 fois moins cher que Sonnet) ;
+// seuls les scans et les photos partent en images, lus par Sonnet. Le même document en Word et en PDF n'est lu qu'une fois.
+const texteImport = async (type, b) => type === DOCX ? `Document Word (texte ; tableaux : une ligne par rangée, cellules séparées par « | ») :\n${docxTexte(b)}`
+  : type === XLSX ? `Feuille Excel (tableau HTML, toutes les feuilles à la suite) :\n${classeurHtml(b).replace(/<style[\s\S]*?<\/style>|\s(style|class)="[^"]*"/g, '')}`
+  : type === 'application/pdf' ? await pdfTexte(b).then(t => t.replace(/\s/g, '').length > 150 ? `PDF (texte mis en page comme sur la feuille : les colonnes sont alignées) :\n${t}` : '').catch(() => '') : '';
+// Même document = au moins 85 % de mots en commun et exactement les mêmes nombres (un montant, une ligne ou la TVA en plus = une autre version : relue).
+const empreinte = t => { const m = t.toLowerCase().match(/[\p{L}\d]+/gu) || [], n = x => /^\d+$/.test(x); return { mots: new Set(m.filter(x => !n(x))), nombres: new Set(m.filter(n)) }; };
+const pareil = (a, b) => { const c = [...a.mots].filter(x => b.mots.has(x)).length;
+  return c / (a.mots.size + b.mots.size - c) >= 0.85 && a.nombres.size === b.nombres.size && [...a.nombres].every(x => b.nombres.has(x)); };
+const dejaLus = new Map(); // compte → [{ mots, nombres, lu: promesse du résultat }], le temps d'une lecture
+async function lireLot(cid, s, lot) {
+  const t0 = Date.now(), vus = dejaLus.get(cid) || dejaLus.set(cid, []).get(cid);
+  const prets = await Promise.all(lot.map(async i => { const m = FICHIER_IMPORT.exec(i.fichier); return { i, m, texte: await texteImport(m[1], Buffer.from(m[2], 'base64')) }; }));
+  // sans await d'ici à l'appel : un lot lu en même temps voit nos documents
+  const copies = [], aLire = [];
+  for (const p of prets) {
+    const e = p.texte && empreinte(p.texte), meme = e && vus.find(v => pareil(v, e));
+    if (meme) copies.push([p.i, meme.lu]); else { aLire.push(p); if (e) vus.push(p.e = e); }
+  }
   const lus = new Map();
-  for (const { fichier, ...r } of docs || []) { const i = lot[+(/doc(\d+)/.exec(fichier)?.[1]) - 1]; if (i && !lus.has(i.id)) lus.set(i.id, r); }
-  console.log(`Import : ${lus.size}/${lot.length} fichiers lus en ${Math.round((Date.now() - t0) / 1000)} s (${fichiers.length} PDF/photos, ${textes.length} Word/Excel)`);
+  if (aLire.length) {
+    const fichiers = [], textes = [];
+    aLire.forEach((p, k) => p.texte ? textes.push(`--- doc${k + 1} ---\n${p.texte.slice(0, 80000)}`) : fichiers.push({ type: p.m[1], data: p.m[2], nom: `doc${k + 1}` }));
+    const consigne = `${aLire.length > 1 ? `${aLire.length} documents, à lire chacun séparément` : '1 document'} : ${aLire.map((p, k) => `doc${k + 1} (fichier d'origine « ${p.i.nom} »)`).join(', ')}.
+${fichiers.length > 1 ? 'Ouvre tous les fichiers en une seule fois. ' : ''}Rends un élément de docs par document, avec fichier = doc1, doc2… Aujourd'hui : ${today()}.${textes.length ? '\n\n' + textes.join('\n\n') : ''}`;
+    const appel = askClaude(importSystem(s), consigne, IMPORT_LOT, fichiers.length ? fichiers : undefined, null, fichiers.length ? { rapide: true } : { modele: 'haiku', rapide: true })
+      .then(({ docs }) => { for (const { fichier, ...r } of docs || []) { const p = aLire[+(/doc(\d+)/.exec(fichier)?.[1]) - 1]; if (p && !lus.has(p.i.id)) lus.set(p.i.id, r); } });
+    aLire.forEach(p => { if (p.e) p.e.lu = appel.then(() => lus.get(p.i.id), () => null); });
+    try { await appel; } finally { aLire.forEach(p => { if (p.e && !lus.has(p.i.id)) vus.splice(vus.indexOf(p.e), 1); }); } // pas lu : relu, pas recopié
+    console.log(`Import : ${lus.size}/${aLire.length} fichiers lus en ${Math.round((Date.now() - t0) / 1000)} s (${fichiers.length} scans/photos par Sonnet, ${textes.length} en texte par Haiku)`);
+  }
+  for (const [i, lu] of copies) { const r = await lu; if (r) lus.set(i.id, r); }
+  if (copies.length) console.log(`Import : ${copies.length} fichier(s) en double (même document en Word et en PDF), non relus`);
   return lus;
 }
 // Chaque appel (nouveau fichier envoyé, « relire »…) complète jusqu'à LECTEURS lecteurs : un lecteur qui trouve la file vide s'arrête,
@@ -1512,7 +1557,7 @@ async function lireImports(cid) {
   };
   const lire = async lot => {
     let lus = new Map(), err;
-    try { lus = await lireLot(s, lot); } catch (e) { if (LIMITE(e)) throw e; err = e; console.error(`Import : lot de ${lot.length} en échec (${e.message})`); }
+    try { lus = await lireLot(cid, s, lot); } catch (e) { if (LIMITE(e)) throw e; err = e; console.error(`Import : lot de ${lot.length} en échec (${e.message})`); }
     for (const i of lot) {
       if (lus.has(i.id)) run("UPDATE imports SET etat='lu', resultat=?, erreur=NULL WHERE id=?", JSON.stringify(lus.get(i.id)), i.id);
       else if (lot.length > 1) await lire([i]);
@@ -1530,7 +1575,7 @@ async function lireImports(cid) {
   };
   await Promise.all(Array.from({ length: LECTEURS - n }, lecteur));
   if (lecteurs.get(cid)) return; // d'autres lecteurs tournent encore : le dernier cherchera les contacts
-  lecteurs.delete(cid);
+  lecteurs.delete(cid); dejaLus.delete(cid);
   await contactsBoite(cid).catch(e => console.error('Import, contacts :', e.message));
 }
 // Les PDF joints aux e-mails envoyés depuis 2 ans (devis et factures envoyés aux clients avec l'ancien logiciel)
@@ -1561,7 +1606,7 @@ async function pdfsBoite(cid) {
 }
 // Clients des documents lus, regroupés par nom (sans la civilité), comparés à ceux déjà dans Kadra et complétés par la boîte mail.
 const CIVILITE = /^((m|mr|mme|mlle|madame|monsieur|mademoiselle)\.?\s+)+/i;
-const cleNom = n => sansAccent(String(n || '').replace(CIVILITE, '').replace(/[^\p{L}\p{N}]+/gu, ' '));
+const cleNom = n => sansAccent(String(n || '').replace(CIVILITE, '').replace(/ı/g, 'i').replace(/[^\p{L}\p{N}]+/gu, ' ')); // ı : « Samıra » lu dans un PDF = Samira
 const importsLus = cid => all("SELECT id, nom, source, email_a, etat, resultat, erreur FROM imports WHERE compte_id=? AND etat='lu' ORDER BY id", cid).map(i => ({ ...i, resultat: JSON.parse(i.resultat) }))
   .filter(i => i.resultat.type !== 'autre');
 function propositions(cid, lus = importsLus(cid)) {
@@ -1569,8 +1614,9 @@ function propositions(cid, lus = importsLus(cid)) {
   for (const i of lus) {
     const c = i.resultat.client, cle = cleNom(c?.nom);
     if (!cle) continue;
-    const p = par.get(cle) || { cle, nom: c.nom.trim(), adresse: '', email: '', tel: '', docs: 0 };
+    const p = par.get(cle) || { cle, nom: c.nom.trim(), adresse: '', email: '', tel: '', siret: '', docs: 0 };
     p.adresse ||= c.adresse || ''; p.email ||= (c.email || '').trim().toLowerCase(); p.tel ||= c.tel || ''; p.docs++;
+    p.siret ||= String(c.siret || '').replace(/\D/g, '').length === 14 ? String(c.siret).replace(/\D/g, '') : '';
     if (!p.email && i.source === 'mail') p.envoye_a = i.email_a; // envoyé par e-mail à cette adresse : le plus souvent le client
     par.set(cle, p);
   }
@@ -1600,8 +1646,8 @@ async function contactsBoite(cid) {
         if (!mot || mot.length < 3) continue;
         const uid = ((await imap.search({ from: mot }, { uid: true })) || []).at(-1);
         if (!uid) continue;
-        const m = await imap.fetchOne(uid, { envelope: true, bodyStructure: true }, { uid: true }), de = m.envelope.from?.[0];
-        if (!de || !sansAccent(`${de.name} ${de.address}`).includes(sansAccent(mot))) continue; // le mot doit être dans l'expéditeur
+        const m = await imap.fetchOne(uid, { envelope: true, bodyStructure: true, headers: ENTETES_PUB }, { uid: true }), de = m.envelope.from?.[0];
+        if (!de || estPub(m) || !sansAccent(`${de.name} ${de.address}`).includes(sansAccent(mot))) continue; // le mot doit être dans l'expéditeur
         const part = m.bodyStructure && (textPart(m.bodyStructure) || textPart(m.bodyStructure, 'text/html'));
         let corps = '';
         if (part) {
@@ -1624,19 +1670,25 @@ function etatImports(cid) {
   const lus = importsLus(cid), vieux = d => !d || daysSince(d) > 60;
   // « Devis - 052 », « 052 » et « DEV052 » = le même numéro (mots, signes et zéros de tête ignorés) ; déjà dans Kadra = doublon
   const cleNum = (type, n) => { const k = String(n || '').toLowerCase().replace(/factures?|devis|avoirs?|fac|dev|n°/g, '').replace(/[^\p{L}\p{N}]/gu, '').replace(/^0+(?=.)/, ''); return k && `${type === 'devis' ? 'D' : 'F'}:${k}`; };
-  const vus = new Set(all('SELECT type, numero FROM documents WHERE compte_id=? AND numero IS NOT NULL', cid).map(d => cleNum(d.type, d.numero)));
+  // même numéro mais client différent (deux entreprises, ou numéro réutilisé) : pas un doublon. Client absent ou un mot du nom en commun = même document.
+  const memeClient = (a, b) => { const x = cleNom(a).split(' ').filter(m => m.length > 2), y = cleNom(b).split(' '); return !x.length || !y.join('') || x.some(m => y.includes(m)); };
+  const vus = new Map(), voir = (cle, nom) => cle && vus.set(cle, [...(vus.get(cle) || []), nom || '']);
+  for (const d of all("SELECT type, numero, data->>'$.client.nom' client FROM documents WHERE compte_id=? AND numero IS NOT NULL", cid)) voir(cleNum(d.type, d.numero), d.client);
   const factures = lus.filter(i => i.resultat.type !== 'devis');
   // même numéro dans plusieurs fichiers (copies, version PDF + Word) : la version la plus complète (total écrit, puis nombre de lignes) est gardée
-  const complet = r => [Math.abs(+r.total_ttc || 0), r.lignes?.length || 0];
-  const ordre = [...lus].sort((a, b) => { const [x, y] = [complet(a.resultat), complet(b.resultat)]; return y[0] - x[0] || y[1] - x[1] || a.id - b.id; });
+  // une version sans aucune ligne (copie vidée où traîne le total d'un autre devis) passe après celles qui ont des lignes
+  const complet = r => [r.lignes?.some(l => l.type !== 'section') ? 1 : 0, Math.abs(+r.total_ttc || 0), r.lignes?.length || 0];
+  const ordre = [...lus].sort((a, b) => { const [x, y] = [complet(a.resultat), complet(b.resultat)]; return y[0] - x[0] || y[1] - x[1] || y[2] - x[2] || a.id - b.id; });
   const docs = ordre.map(({ id, nom, resultat: r }) => {
-    const cle = cleNum(r.type, r.numero), doublon = !!cle && vus.has(cle);
-    if (cle) vus.add(cle);
+    // sans numéro : même date et même total = le même document (version Word + PDF)
+    const cle = cleNum(r.type, r.numero) || (r.date && +r.total_ttc ? `${r.type === 'devis' ? 'D' : 'F'}:~${r.date}:${r2(r.total_ttc)}` : ''), doublon = !!cle && (vus.get(cle) || []).some(c => memeClient(c, r.client?.nom));
+    voir(cle, r.client?.nom);
     // devis : signé s'il porte la signature ou si le même client a une facture après ; sans réponse depuis 2 mois = sans suite
     const facturé = factures.some(f => cleNom(f.resultat.client?.nom) === cleNom(r.client?.nom) && (f.resultat.date || '') >= (r.date || ''));
-    const defaut = r.type === 'devis' ? (r.signe || facturé ? 'accepte' : vieux(r.date) ? 'refuse' : 'envoye')
-      : r.type === 'avoir' ? '' : r.paye || vieux(AAAAMMJJ.test(r.echeance) ? r.echeance : r.date) ? 'payee' : 'a_payer';
     const { lignes, ecart } = lignesImport(r, s), ttc_calc = totaux({ ...r, lignes }, s.franchise_tva).ttc;
+    // devis sans aucun montant (ni prix ni total) = brouillon jamais envoyé
+    const defaut = r.type === 'devis' ? (!ttc_calc && !+r.total_ttc ? 'brouillon' : r.signe || facturé ? 'accepte' : vieux(r.date) ? 'refuse' : 'envoye')
+      : r.type === 'avoir' ? '' : r.paye || vieux(AAAAMMJJ.test(r.echeance) ? r.echeance : r.date) ? 'payee' : 'a_payer';
     return { id, nom, type: r.type, numero: r.numero, date: r.date, client: r.client?.nom || '', objet: r.objet, ttc: r2(r.total_ttc), ttc_calc, ecart: ecart || !ttc_calc, defaut, doublon };
   });
   return {
@@ -1649,36 +1701,54 @@ function etatImports(cid) {
 // Validation : clients gardés (complète les fiches existantes sans rien écraser), documents copiés avec le choix de l'artisan. Tout ou rien.
 function validerImports(cid, { choix = {}, refuses = [] }) {
   const s = settings(cid), lus = importsLus(cid), props = propositions(cid, lus), ids = new Map(), { docs } = etatImports(cid);
-  const out = { devis: 0, factures: 0, clients: 0, sautes: [] };
+  const out = { devis: 0, factures: 0, clients: 0, chantiers: 0, sautes: [] }, signes = [], facts = [];
   db.exec('BEGIN');
   try {
     for (const p of props) {
       if (refuses.includes(p.cle) || !lus.some(i => cleNom(i.resultat.client?.nom) === p.cle && docs.some(d => d.id === i.id && choix[i.id] !== 'ignore'))) continue;
-      if (p.existe) run("UPDATE clients SET adresse=COALESCE(NULLIF(adresse,''),?), email=COALESCE(NULLIF(email,''),?), tel=COALESCE(NULLIF(tel,''),?) WHERE id=? AND compte_id=?", p.adresse, p.email, p.tel, p.existe, cid);
+      if (p.existe) run("UPDATE clients SET adresse=COALESCE(NULLIF(adresse,''),?), email=COALESCE(NULLIF(email,''),?), tel=COALESCE(NULLIF(tel,''),?), siret=COALESCE(NULLIF(siret,''),?) WHERE id=? AND compte_id=?", p.adresse, p.email, p.tel, p.siret, p.existe, cid);
       else out.clients++;
-      ids.set(p.cle, p.existe || Number(run('INSERT INTO clients (compte_id, nom, adresse, email, tel) VALUES (?,?,?,?,?)', cid, p.nom, p.adresse, p.email, p.tel).lastInsertRowid));
+      ids.set(p.cle, p.existe || Number(run('INSERT INTO clients (compte_id, nom, adresse, email, tel, siret) VALUES (?,?,?,?,?,?)', cid, p.nom, p.adresse, p.email, p.tel, p.siret).lastInsertRowid));
     }
     for (const d of docs) {
       const r = lus.find(i => i.id === d.id).resultat, c = choix[d.id] || d.defaut;
       if (c === 'ignore') { run("UPDATE imports SET etat='ignore' WHERE id=?", d.id); continue; }
       const facture = r.type !== 'devis', kind = { acompte: 'acompte', avoir: 'avoir' }[r.type] || 'standard';
-      const numero = String(r.numero || '').trim().slice(0, 60) || (facture ? `IMPORT-${d.id}` : null); // une facture a toujours un numéro (sinon elle resterait modifiable)
-      if (numero && get('SELECT 1 FROM documents WHERE compte_id=? AND numero=?', cid, numero)) { out.sautes.push(numero); run("UPDATE imports SET etat='doublon' WHERE id=?", d.id); continue; }
+      let numero = String(r.numero || '').trim().slice(0, 60) || (facture ? `IMPORT-${d.id}` : null); // une facture a toujours un numéro (sinon elle resterait modifiable)
+      // numéro déjà pris par un autre document (autre client, cf. etatImports) : « FACTURE-015 (2) »
+      for (let k = 2, base = numero; numero && get('SELECT 1 FROM documents WHERE compte_id=? AND numero=?', cid, numero); k++) numero = `${base} (${k})`;
       const p = props.find(x => x.cle === cleNom(r.client?.nom)), date = AAAAMMJJ.test(r.date) ? r.date : today();
       const { lignes } = lignesImport(r, s);
-      const data = { client: { nom: r.client?.nom || '', adresse: r.client?.adresse || p?.adresse || '', email: p?.email || r.client?.email || '', tel: p?.tel || r.client?.tel || '' },
+      const data = { client: { nom: r.client?.nom || '', adresse: r.client?.adresse || p?.adresse || '', email: p?.email || r.client?.email || '', tel: p?.tel || r.client?.tel || '', ...(p?.siret && { siret: p.siret }) },
         objet: r.objet || '', adresse_chantier: r.adresse_chantier || '', remise_pct: +r.remise_pct || 0, acompte_pct: 0, notes: '', lignes, importe: { fichier: d.nom, le: today() } };
       const t = totaux(data, s.franchise_tva), maintenant = new Date().toISOString();
       const echeance = AAAAMMJJ.test(r.echeance) ? r.echeance : addDays(date, facture ? s.delai_paiement_jours : s.validite_jours);
-      const statut = facture ? 'envoyee' : ['envoye', 'accepte', 'refuse'].includes(c) ? c : 'envoye';
+      const statut = facture ? 'envoyee' : ['brouillon', 'envoye', 'accepte', 'refuse'].includes(c) ? c : 'envoye';
       // derniere_relance = maintenant : une relance automatique (devis en attente, facture pas payée) attend le délai habituel, jamais le jour de l'import
       const id = Number(run(`INSERT INTO documents (compte_id, type, kind, numero, client_id, statut, date, echeance, data, total_ht, total_ttc, token, template_id, envoye_le, derniere_relance)
         VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?,?,?)`, cid, facture ? 'facture' : 'devis', kind, numero, p && ids.get(p.cle) || null, statut, date, echeance, JSON.stringify(data),
-        t.ht, t.ttc, crypto.randomBytes(24).toString('hex'), s.template_id, date, maintenant).lastInsertRowid);
+        t.ht, t.ttc, crypto.randomBytes(24).toString('hex'), s.template_id, statut === 'brouillon' ? null : date, maintenant).lastInsertRowid);
       if (facture && kind !== 'avoir' && c !== 'a_payer' && t.ttc > 0) run('INSERT INTO payments (compte_id, document_id, montant, date, mode, note) VALUES (?,?,?,?,?,?)', cid, id, t.ttc, echeance < today() ? echeance : date, '', 'Réglée avant Kadra');
       run("UPDATE imports SET etat='importe', document_id=? WHERE id=?", id, d.id);
       out[facture ? 'factures' : 'devis']++;
+      const cli = p && ids.get(p.cle);
+      if (cli && statut === 'accepte') signes.push({ id, cli, date, data });
+      if (cli && facture) facts.push({ id, cli, date, kind });
     }
+    // Devis signés : un chantier chacun (adresse du chantier, sinon celle du client), avec les factures du même client faites ensuite.
+    // Facture finale après le devis = chantier terminé ; sinon « à venir » s'il a moins de 90 jours. Plus vieux sans facture : pas de chantier
+    // (sa facture n'a sans doute pas été importée : le chantier passerait « à facturer » pour rien).
+    signes.sort((a, b) => a.date.localeCompare(b.date));
+    signes.forEach((v, k) => {
+      const fin = signes.slice(k + 1).find(x => x.cli === v.cli)?.date || '9999'; // ponytail: factures rangées au devis signé juste avant elles
+      const fs = facts.filter(f => f.cli === v.cli && f.date >= v.date && f.date < fin);
+      const finale = fs.filter(f => f.kind === 'standard').map(f => f.date).sort().at(-1);
+      if (!finale && daysSince(v.date) > 90) return;
+      const ch = insert('chantiers', { nom: v.data.objet || 'Chantier ' + v.data.client.nom, client_id: v.cli, devis_id: v.id, adresse: v.data.adresse_chantier || v.data.client.adresse,
+        email_suivi: v.data.client.email, ...(finale ? { statut: 'termine', avancement: 100, date_debut: v.date, date_fin_reelle: finale } : {}) }, cid);
+      for (const x of [v, ...fs]) run('UPDATE documents SET chantier_id=? WHERE id=? AND compte_id=?', ch.id, x.id, cid);
+      out.chantiers++;
+    });
     db.exec('COMMIT');
   } catch (e) { db.exec('ROLLBACK'); throw e; }
   // nouveaux clients : la boîte mail est relue sur 90 jours pour ranger leurs anciens e-mails (déjà lus : ils ne sont pas nouveaux)
@@ -1771,7 +1841,7 @@ on('POST', '/api/clients/:id/email', async ({ cid, p, body }) => {
   return { statut: await sendMail(cid, { to: c.email, sujet: body.sujet, corps: body.corps, client_id: c.id, reponseA: orig?.message_id?.startsWith('<') ? orig.message_id : null }) };
 });
 on('POST', '/api/clients/:id/brouillon', ({ cid, p, body, user }) => aiMail(body, own('clients', p.id, cid), user, cid));
-on('GET', '/api/compteurs', ({ cid }) => compteurs(cid));
+on('GET', '/api/compteurs', ({ cid, user }) => ({ ...compteurs(cid), modeles: isKadra(user) ? get("SELECT COUNT(*) n FROM demandes_modele WHERE statut!='faite'").n : 0 }));
 on('GET', '/api/mails', ({ cid }) => all(`${MAILS} ORDER BY x.created_at DESC, x.id DESC LIMIT 2000`, cid));
 on('POST', '/api/mails/lus', ({ cid, body }) => { // ids : une conversation ouverte ; sans ids : tout
   if (Array.isArray(body?.ids)) for (const id of body.ids) run('UPDATE emails SET lu=1 WHERE compte_id=? AND id=?', cid, Number(id));
@@ -1801,7 +1871,13 @@ on('GET', '/api/pieces/:id', ({ cid, p }) => {
   const f = get('SELECT * FROM pieces WHERE id=? AND compte_id=?', p.id, cid) || (() => { throw httpErr(404, 'Pièce jointe introuvable'); })();
   return { file: Buffer.from(f.data), type: SURS.includes(f.type) ? f.type : 'application/octet-stream', name: String(f.nom).normalize('NFD').replace(/[^\w.\- ()]/g, '_') };
 });
-on('POST', '/api/boite/relever', async ({ cid }) => ({ nouveaux: await releverBoite(cid) }));
+// Photo de chantier en image (vignette de l'accueil) : la data URL de la base, servie telle quelle
+on('GET', '/api/photos/:id/image', ({ cid, p }) => {
+  const f = get('SELECT image FROM photos WHERE id=? AND compte_id=?', p.id, cid), m = f && /^data:(image\/(?:jpeg|png|webp));base64,(.+)$/.exec(f.image);
+  if (!m) throw httpErr(404, 'Photo introuvable');
+  return { file: Buffer.from(m[2], 'base64'), type: m[1], name: 'photo.' + m[1].slice(6) };
+});
+on('POST', '/api/boite/relever',async ({ cid }) => ({ nouveaux: await releverBoite(cid) }));
 // 1re connexion (ou Paramètres) : adresse + mot de passe d'application, connexion essayée avant d'enregistrer
 on('POST', '/api/boite/brancher', async ({ cid, body }) => {
   const user = String(body.email || '').trim(), dom = user.split('@')[1]?.toLowerCase();
@@ -1936,6 +2012,11 @@ on('GET', '/api/templates/exemple', ({ cid, q }) => docContext(SAMPLE, masked(se
 on('GET', '/templates/:id/apercu', ({ cid, p }) => { own('templates', p.id, cid); return html({ ...SAMPLE, compte_id: cid, template_id: +p.id }); });
 
 on('GET', '/api/documents/:id/html', ({ cid, p, q }) => html(own('documents', p.id, cid), q.print ? '<script>onload=()=>print()</script>' : ''));
+// Word / Excel modifiables, avec la mise en page du document (même rendu que le PDF).
+for (const [ext, f, type] of [['docx', docWord, DOCX], ['xlsx', docExcel, XLSX]]) on('GET', `/api/documents/:id/${ext}`, async ({ cid, p }) => {
+  const d = own('documents', p.id, cid);
+  return { file: await f(html(d)), type, name: pdfName(d).replace(/pdf$/, ext), attachment: true };
+});
 on('GET', '/api/documents/:id/pdf', async ({ cid, p }) => { const d = own('documents', p.id, cid); return { file: await docPdf(d), type: 'application/pdf', name: pdfName(d) }; });
 on('GET', '/api/documents/:id/facturx.xml', ({ cid, p }) => {
   const d = own('documents', p.id, cid);
@@ -1964,23 +2045,24 @@ on('POST', '/api/documents/:id/facture', ({ cid, p, body }) => {
 });
 function creerFacture(d, mode, pct) {
   const s = settings(d.compte_id), base = { client: d.data.client, objet: d.data.objet, adresse_chantier: d.data.adresse_chantier, notes: '', ...(d.data.exemple && { exemple: true }) };
+  if (d.data.paiement_des > today()) base.paiement_des = d.data.paiement_des; // signé à domicile : pas de paiement en ligne avant 7 jours
   const acompte = mode === 'acompte', situation = mode === 'situation';
   // acomptes et situations déjà faits (les brouillons comptent : ils seront émis) ; déduits de la situation suivante et de la facture finale
   const acomptes = all("SELECT * FROM documents WHERE type='facture' AND kind IN ('acompte','situation') AND parent_id=? ORDER BY id", d.id);
   if (situation && !(pct > 0 && pct <= 100)) throw httpErr(400, 'Avancement : entre 1 et 100 %.');
   const data = acompte ? { ...base, remise_pct: 0, lignes: lignesAcompte(d, pct, s.franchise_tva) }
     : situation ? { ...base, remise_pct: 0, situation_pct: pct, lignes: lignesSituation(d, pct, acomptes, acomptes.filter(f => f.kind === 'situation').length + 1, s.franchise_tva) }
-    : { ...base, remise_pct: d.data.remise_pct || 0, lignes: lignesSolde(d, acomptes) };
+    : { ...base, remise_pct: d.data.remise_pct || 0, forfait_ht: d.data.forfait_ht, lignes: lignesSolde(d, acomptes) };
   return insert('documents', { type: 'facture', kind: acompte ? 'acompte' : situation ? 'situation' : acomptes.length ? 'solde' : 'standard', client_id: d.client_id, chantier_id: d.chantier_id, parent_id: d.id, template_id: d.template_id, data }, d.compte_id);
 }
 // Avoir : copie négative de la facture émise (à ajuster ensuite pour un avoir partiel).
 on('POST', '/api/documents/:id/avoir', ({ cid, p }) => {
   const f = own('documents', p.id, cid);
   if (f.type !== 'facture' || f.kind === 'avoir' || !f.numero) throw httpErr(400, 'Un avoir se crée depuis une facture émise.');
-  const lignes = f.data.lignes.map(l => (l.type === 'section' ? l : { ...l, pu: -l.pu }));
+  const lignes = f.data.lignes.map(l => (l.type === 'section' || sansPrix(l) ? l : { ...l, pu: l.pu === null || l.pu === '' ? l.pu : -l.pu, ...(l.montant != null && l.montant !== '' && { montant: -l.montant }) }));
   return insert('documents', {
     type: 'facture', kind: 'avoir', client_id: f.client_id, chantier_id: f.chantier_id, parent_id: f.id, template_id: f.template_id,
-    data: { ...f.data, lignes, notes: `Avoir sur la facture ${f.numero}`, questions: [], dictees: [] },
+    data: { ...f.data, lignes, forfait_ht: -f.data.forfait_ht || 0, notes: `Avoir sur la facture ${f.numero}`, questions: [], dictees: [] },
   }, cid);
 });
 on('POST', '/api/documents/:id/dupliquer', ({ cid, p, body }) => {
@@ -2110,8 +2192,10 @@ function voirGamme(d, g) {
   const data = { ...d.data, lignes: gs[g].lignes, gamme: +g }, t = totaux(data, settings(d.compte_id).franchise_tva);
   return { ...d, data, total_ht: t.ht, total_ttc: t.ttc };
 }
+// Contrat signé au domicile d'un particulier : aucun paiement avant 7 jours (art. L221-10 du Code de la consommation)
+const attente7 = d => (d.data?.paiement_des > today() ? d.data.paiement_des : '');
 function bar(d, s) {
-  const reste = r2(d.total_ttc - d.regle), payable = d.type === 'facture' && d.kind !== 'avoir' && d.numero && reste > 0 && s.stripe_secret;
+  const reste = r2(d.total_ttc - d.regle), payable = d.type === 'facture' && d.kind !== 'avoir' && d.numero && reste > 0 && s.stripe_secret, attente = payable && attente7(d);
   const signable = d.type === 'devis' && !d.signature && d.statut !== 'refuse';
   const gs = gammesOuvertes(d), g = d.data.gamme ?? 1, esc = x => String(x).replace(/[<>&"]/g, '');
   const choix = gs && signable ? `<div class="gm"><b>Choisissez votre gamme</b><div>${gs.map((x, i) => `<a href="?g=${i}" class="${i === g ? 'on' : ''}">${esc(x.nom)}<small>${eur(totaux({ ...d.data, lignes: x.lignes }, s.franchise_tva).ttc)} TTC</small></a>`).join('')}</div></div>` : '';
@@ -2122,7 +2206,7 @@ function bar(d, s) {
 .pbar .gm a{display:grid;gap:2px;text-align:center;border-radius:16px;padding:10px 6px;font-weight:700}.pbar .gm small{font-weight:400;opacity:.85;font-size:13px}.pbar .gm a.on{background:#fff;color:#14213d}
 @media print{.pbar{display:none}}</style>
 <div class="pbar">${choix}<a href="/p/${d.token}/pdf${gs ? '?g=' + g : ''}">Télécharger le PDF</a><button onclick="print()">Imprimer</button>
-${payable ? `<button class="go" id="pay">Payer ${eur(reste)} par carte</button>` : ''}
+${attente ? `<span>Paiement en ligne possible à partir du ${attente.split('-').reverse().join('/')} (délai légal de 7 jours)</span>` : payable ? `<button class="go" id="pay">Payer ${eur(reste)} par carte</button>` : ''}
 ${signable ? `<form id="f"><b>Signer le devis en ligne${gs ? ` : gamme ${esc(gs[g]?.nom || '')}, ${eur(d.total_ttc)} TTC` : ''}</b><input name="nom" required placeholder="Nom et prénom" aria-label="Nom et prénom">
 <canvas id="c" width="420" height="150" aria-label="Zone de signature"></canvas>
 <label><input type="checkbox" required> Bon pour accord : j’accepte ce devis et ses conditions.</label>
@@ -2153,6 +2237,10 @@ on('POST', '/p/:token/sign', async ({ p, body, req }) => {
     update('documents', d.id, { data: { ...d.data, lignes: gs[body.gamme].lignes, gamme: +body.gamme } }, cid);
     d = docByToken(p.token);
   }
+  // Signé sur l'appareil de l'artisan (connecté à son compte) = chez le client : contrat hors établissement
+  const perso = particulier(d.data.client), surPlace = perso && userOf(req)?.compte_id === cid;
+  const j = n => addDays(today(), n), fr =x => x.split('-').reverse().join('/');
+  if (surPlace) { update('documents', d.id, { data: { ...d.data, paiement_des: j(7) } }, cid); d = docByToken(p.token); }
   run("UPDATE documents SET signature=?, signe_par=?, signe_le=?, signe_ip=?, statut='accepte' WHERE id=?", body.signature, body.nom.trim().slice(0, 120), new Date().toISOString(), req.socket.remoteAddress, d.id);
   creerChantier(own('documents', d.id, cid));
   let acompte = null;
@@ -2163,12 +2251,13 @@ on('POST', '/p/:token/sign', async ({ p, body, req }) => {
     await sendMail(cid, { to: d.data.client?.email || d.client_email, sujet: `Facture d’acompte ${emise.numero} – ${s.nom}`, corps: fillMail(s.mail_envoi, docMailVars(emise)), document_id: emise.id, joindre: emise });
     acompte = emise.token;
   }
-  if (s.email) await sendMail(cid, { to: s.email, sujet: `Devis ${d.numero} signé par ${body.nom}`, corps: `Bonne nouvelle : le devis ${d.numero} (${eur(d.total_ttc)} TTC) vient d’être signé${gs ? `, gamme ${gs[body.gamme].nom}` : ''}. Le chantier a été créé automatiquement.${acompte ? ' La facture d’acompte a été émise et envoyée au client.' : ''}`, document_id: d.id });
+  if (s.email) await sendMail(cid, { to: s.email, sujet: `Devis ${d.numero} signé par ${body.nom}`, corps: `Bonne nouvelle : le devis ${d.numero} (${eur(d.total_ttc)} TTC) vient d’être signé${gs ? `, gamme ${gs[body.gamme].nom}` : ''}. Le chantier a été créé automatiquement.${acompte ? ' La facture d’acompte a été émise et envoyée au client.' : ''}${perso ? `\n\nClient particulier : il peut se rétracter pendant 14 jours, jusqu’au ${fr(j(14))}. Ne commencez pas les travaux avant, sauf s’il vous le demande par écrit.${surPlace ? ` Devis signé sur votre appareil (chez le client) : la loi interdit d’encaisser quoi que ce soit avant le ${fr(j(7))}, le paiement en ligne s’ouvrira ce jour-là.` : ''}` : ''}`, document_id: d.id });
   return { ok: true, acompte };
 }, PUB);
 on('POST', '/p/:token/payer', async ({ p }) => {
   const d = docByToken(p.token), s = settings(d.compte_id), reste = r2(d.total_ttc - d.regle);
   if (d.type !== 'facture' || d.kind === 'avoir' || !d.numero || reste <= 0 || !s.stripe_secret) throw httpErr(400, 'Paiement en ligne indisponible pour ce document.');
+  if (attente7(d)) throw httpErr(400, 'Paiement possible à partir du ' + attente7(d).split('-').reverse().join('/') + ' (délai légal de 7 jours).');
   const email = d.data.client?.email || d.client_email;
   const session = await stripe(s.stripe_secret, 'checkout/sessions', {
     mode: 'payment', 'line_items[0][quantity]': 1, 'line_items[0][price_data][currency]': 'eur',

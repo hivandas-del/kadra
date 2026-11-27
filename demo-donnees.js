@@ -2,6 +2,7 @@
 // Servent à la démo (demo.js, port 3001) et à la présentation de la 1re connexion (server.js : compte « bac à sable » effacé à la fin).
 // Dates calées sur le 31/10/2026 ; jours = décalage pour que « aujourd'hui » tombe au même endroit de l'histoire.
 import crypto from 'node:crypto';
+import fs from 'node:fs';
 import { totaux, lignesAcompte, lignesSolde, r2, eur } from './public/calc.js';
 
 export function remplirDemo(db, cid, { url: URL, jours = 0 } = {}) {
@@ -222,6 +223,10 @@ export function remplirDemo(db, cid, { url: URL, jours = 0 } = {}) {
     [null, '2026-10-15', 'Total', 'Gasoil camion', 'carburant', 112.4], [null, '2026-10-28', 'Würth', 'Forets, disques, visserie', 'outillage', 186],
   ]) ins('depenses', { compte_id: cid, chantier_id: k && chId(k), date, fournisseur, libelle, categorie, ttc, tva });
 
+  // Une photo par chantier en cours (vignette de l'accueil) : morceaux de la photo de l'écran de connexion (Unsplash), fichier absent = pas de photo
+  for (const k of ['demir', 'fournil', 'roche']) {
+    try { ins('photos', { compte_id: cid, chantier_id: chId(k), image: 'data:image/jpeg;base64,' + fs.readFileSync(new globalThis.URL(`./demo-photos/${k}.jpg`, import.meta.url)).toString('base64'), legende: 'Sur le chantier' }); } catch (e) { if (e.code !== 'ENOENT') console.error('Photo de démo non mise :', e.message); }
+  }
   // Proposé par Claude à partir de l'e-mail de M. Haddad (à confirmer dans l'Agenda)
   ins('rdv', { compte_id: cid, titre: 'Visite emplacement VMC – M. Haddad', debut: '2026-11-04T18:00', client_id: C.haddad.id, lieu: adr('haddad'), email_id: mHaddad, statut: 'propose' });
   for (const [k, texte, ch] of [
